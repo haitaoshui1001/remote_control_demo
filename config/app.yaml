@@ -1,0 +1,166 @@
+app:
+  mock: false
+  log_level: INFO
+  log_dir: logs
+  data_dir: data
+  title: EWD611 数传图传上位机控制台
+  templates_file: config/templates.yaml
+video:
+  camera_ip: 192.168.1.10
+  rtsp_port: 554
+  onvif_port: 8899
+  user: admin
+  password: ''
+  channel: 1
+  stream_index: 1
+  url: ''
+  url_template: rtsp://{ip}:{port}/user={user}&password={password}&channel={channel}&stream={stream}.sdp?
+  transport: udp
+  auto_connect: true
+  auto_reconnect: true
+  reconnect_interval_s: 3.0
+  max_reconnects: 0
+  open_timeout_us: 5000000
+  decode_threads: 2
+  render_fps_limit: 25.0
+  drop_late_frames: true
+  keep_aspect: true
+  show_osd: true
+  buffer_ms: 100
+  pacing_frames: 3
+  max_dwell_ms: 120.0
+serial:
+  port: ''
+  auto_detect: true
+  preferred_vids:
+  - 1A86
+  - 10C4
+  - '2341'
+  baudrate: 115200
+  bytesize: 8
+  parity: N
+  stopbits: 1
+  rtsCTS: false
+  read_timeout_ms: 20
+  rx_idle_gap_ms: 30
+  auto_reconnect: true
+  exclusive_fallback: true
+at:
+  channel: udp
+  fallback_channel: ''
+  line_ending: crlf
+  timeout_ms: 1500
+  retries: 2
+  ok_tokens:
+  - OK
+  err_tokens:
+  - ERROR
+  - ERR
+  - FAIL
+  pre_silence_ms: 20
+  wake_gap_ms: 300
+  wake_sequence: ''
+  echo_suppress: true
+  pause_passthrough: true
+  local_role: ap
+  remote_role: sta
+udp_at:
+  local_bind_ip: ''
+  target_port: 56789
+  local_port: 56789
+  probe_timeout_ms: 900
+  broadcast_scan: true
+  host_id: ''
+  target_mac: ''
+  discovery_interval_ms: 500
+link:
+  auto_poll: true
+  poll_interval_s: 1.0
+  volatile_after_first: true
+  history_minutes: 30
+  read_order:
+  - MODE
+  - CONN_STATE
+  - RSSI
+  - BSS_BW
+  - FREQ_RANGE
+  - CHAN_LIST
+  - TXPOWER
+  - TX_MCS
+  - ACKTMO
+  - HEART_INT
+  - SSID
+  - KEYMGMT
+  ap_extra:
+  - WNBCFG
+  - STA_INFO
+  rssi_warn: -85.0
+  rssi_crit: -92.0
+  evm_warn: -20.0
+  loss_warn_percent: 5.0
+  stale_after_s: 12.0
+passthrough:
+  channel: serial
+  mode: hex
+  suffix: none
+  echo_tx: true
+  reply_timeout_ms: 800
+  rx_idle_gap_ms: 30
+  max_records: 2000
+  auto_scroll: true
+  default_group: 默认
+  show_hex: true
+  show_ascii: true
+telemetry:
+  enabled: true
+  log_csv: true
+  stale_after_s: 3.0
+  display_throttle_hz: 2.0
+  frame:
+    protocol: wheeltec
+    header_hex: AA 55
+  status_map:
+    0: 待机
+    1: 自动驾驶
+    2: 遥控
+    3: 急停
+  battery:
+    low_voltage_v: 22.0
+  curve:
+    window_s: 60.0
+    series:
+    - voltage
+    - vx
+  mock:
+    enabled: auto
+motion:
+  enabled: true
+  max_linear_speed: 1.0
+  max_angular_speed: 0.5
+  linear_accel: 0.5
+  linear_decel: 0.8
+  angular_accel: 0.3
+  angular_decel: 0.5
+  send_period_ms: 100
+  stop_on_focus_loss: true
+  frame_protocol: wheeltec
+  invert_angular: false
+  frame_hex: AA 01 {vx} {vr}
+record:
+  video_dir: data/recordings
+  byte_dir: data/passthrough
+  log_dir: data/logs
+  snapshot_dir: data/snapshots
+  export_csv: true
+ui:
+  theme: light
+  geometry:
+  - 1280
+  - 800
+  - 60
+  - 40
+  start_page: video
+  poll_ui_ms: 200
+  at_log_max: 500
+  confirm_exit: true
+  font_size: 20

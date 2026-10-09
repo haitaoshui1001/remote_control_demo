@@ -1,0 +1,20 @@
+[project]
+name = "ewd611-hmi"
+version = "0.1.0"
+description = "EWD611-868NW33 数传图传模块上位机控制软件（视频显示 / 485 透传 / 电台配置 / 信道监控）"
+requires-python = ">=3.11"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests", "tools"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = [
+    "E741",  # 允许 l 等单字母变量（hex dump 场景常见）
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

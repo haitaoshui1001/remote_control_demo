@@ -1,0 +1,28 @@
+- id: modbus_read_holding
+  name: 读保持寄存器 0x0000~0x0001
+  group: Modbus 示例
+  payload: 01 03 00 00 00 02
+  match_prefix: 01 03
+  crc16_append: true
+  order: 10
+  note: 从机 1，功能码 03；CRC 由程序自动追加
+- id: generic_on
+  name: 通道 {ch} 开
+  group: 通用
+  payload: 01 06 00 {reg} 00 01
+  crc16_append: true
+  order: 20
+  note: 占位符示例：{ch} 与 {reg} 在下发前填入
+- id: ascii_status
+  name: 查询状态（ASCII）
+  group: 通用
+  payload: STATUS\r\n
+  mode: ascii
+  order: 30
+  note: ASCII 模式支持 \\r \\n 转义
+- id: motion_demo
+  name: 运动速度帧（演示）
+  group: 运动控制
+  payload: 7B 00 00 00 64 00 00 00 00 1F 7D
+  order: 40
+  note: Wheeltec 11 字节下行帧样例（X=+0.100m/s，Y=0，Z=0，末位 1F 为前 9 字节异或校验）；周期变速控制请走运动控制页，由服务自动组帧

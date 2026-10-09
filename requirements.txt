@@ -1,0 +1,12 @@
+# EWD611 HMI runtime dependencies (keep this file ASCII-only:
+# pip on Chinese Windows decodes it with the system GBK codec
+# unless the file is UTF-8 with BOM, so any non-ASCII comment
+# can break `pip install -r requirements.txt`).
+# Install: conda run -n ewd611-hmi pip install -r requirements.txt
+pyserial==3.5
+av>=12.0,<14.0
+numpy>=1.26,<2.3
+PyQt5>=5.15.10,<5.16
+pyqtgraph>=0.13.3
+PyYAML>=6.0.1
+Pillow>=10.2.0

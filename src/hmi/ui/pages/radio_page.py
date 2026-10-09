@@ -1,0 +1,740 @@
+"""电台配置页：由参数注册表生成的 AT 参数表单（读取 / 编辑 / 预览 / 下发）。
+
+表单行来自 ``RadioService.catalog()``——注册表是唯一真相源，页面不硬编码任何
+参数名、范围或枚举；协议手册改了注册表，这一页自动跟着变。可写行给出编辑控件
+（有枚举的用下拉，其余用文本框，留空即不发送），只读行禁用编辑；
+"动作指令（只写）"分组的行经 ``action()`` 执行，其余写路径经 ``write()``。
+
+周期回填走合并类主题 ``RADIO_PARAMS``（遥测快照的 16 键视图）：只刷"当前值"
+列，不碰用户尚未下发的编辑。手动"读取全部"放到后台线程跑 ``read_many()``——
+实机模块不应答时每个参数都要等满超时加重试，同步跑会把界面冻死；结果经信号
+回填表格，读取期间按钮置灰防止叠加请求。
+
+预览面板是下发前的最后一道检查：用与客户端同款的 ``encode + format_at`` 列出
+将要发出的完整 AT 行，校验失败的值单独标出，绝不静默吞掉。
+服务未装配时所有动作禁用，页面仍然可读。
+"""
+
+from __future__ import annotations
+
+import time
+
+from PyQt5.QtCore import QSize, Qt, QThread, pyqtSignal
+from PyQt5.QtGui import QBrush, QColor, QFont
+from PyQt5.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
+    QComboBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QPlainTextEdit,
+    QPushButton,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
+
+from ...core.events import Events
+from ...protocol import param_registry as registry
+from ...protocol.at_codec import format_at
+from ...transport.serial_transport import list_serial_ports
+from ..theme import font_px, mono_font
+from .base import BasePage
+
+__all__ = ["RadioPage"]
+
+_COLS = ("参数", "当前值", "新值", "限制", "读写", "说明")
+_C_NAME, _C_CUR, _C_EDIT, _C_BOUND, _C_RW, _C_DESC = range(6)
+_RW_LABELS = {"rw": "读+写", "ro": "只读", "wo": "只写"}
+_VIEW_KEYS = {
+    "role": "MODE",
+    "ssid": "SSID",
+    "keymgmt": "KEYMGMT",
+    "bandwidth_mhz": "BSS_BW",
+    "freq_range": "FREQ_RANGE",
+    "chan_list": "CHAN_LIST",
+    "txpower_dbm": "TXPOWER",
+    "tx_mcs": "TX_MCS",
+    "acktmo_us": "ACKTMO",
+    "heart_int_ms": "HEART_INT",
+    "rssi_dbm": "RSSI",
+    "evm_db": "EVM",
+}
+_DIM_COLOR = QColor("#6b7482")
+_ERR_COLOR = QColor("#b3261e")
+_GROUP_BG = QColor("#eef2f7")
+
+#: "当前值"列固定像素宽度：长值（如信道列表）在列内换行，不再撑宽整列。
+_CUR_COL_PX = 300
+
+#: "读写"列固定像素宽度：约两倍的自适应宽度，"读+写""只读"看着不局促。
+_RW_COL_PX = 140
+
+#: 读到值染绿底、错误码染红底；判定用包含式，兼容 "+ERR=6" / "ERROR" / "sta:1 is not exist"。
+_OK_BG = QColor("#e3f4e4")
+_ERR_BG = QColor("#fbe4e2")
+_ERR_TOKENS = ("ERR", "FAIL", "NOT EXIST", "不存在")
+
+_cur_font_cache: QFont | None = None
+
+
+def _is_error_text(text: str) -> bool:
+    upper = text.upper()
+    return any(tok in upper for tok in _ERR_TOKENS)
+
+
+def _cur_font() -> QFont:
+    """"当前值"列的小一号等宽字体，按正文基准联动，固定宽度下能容下长值。"""
+    global _cur_font_cache
+    if _cur_font_cache is None:
+        _cur_font_cache = QFont("Consolas", max(9, font_px() // 2 + 1))
+    return _cur_font_cache
+
+
+class _SingleLineDelegate(QStyledItemDelegate):
+    """说明列单行显示：超长截断加省略号，行高不再被折行撑大，全文看悬浮提示。"""
+
+    def sizeHint(self, option: QStyleOptionViewItem, index) -> QSize:
+        base = super().sizeHint(option, index)
+        return QSize(base.width(), option.fontMetrics.lineSpacing() + 6)
+
+    def paint(self, painter, option, index) -> None:
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        text = opt.text
+        if not text:
+            super().paint(painter, option, index)
+            return
+        opt.text = ""
+        widget = opt.widget
+        style = widget.style() if widget is not None else QApplication.style()
+        style.drawControl(QStyle.CE_ItemViewItem, opt, painter, widget)
+        # 文本矩形直接用单元格 rect：全局样式表生效时 QStyleSheetStyle 的
+        # subElementRect(SE_ItemViewItemText) 会返回塌陷矩形，文字整列画不出来。
+        rect = opt.rect.adjusted(4, 0, -4, 0)
+        painter.save()
+        painter.setFont(opt.font)
+        selected = bool(opt.state & QStyle.State_Selected)
+        # QPalette 的 highlightedText()/windowText() 返回 QBrush，setPen 只收 QColor；
+        # 直接传 Brush 会在每次绘制时抛 TypeError，文字整列画不出来。
+        brush = opt.palette.highlightedText() if selected else opt.palette.windowText()
+        painter.setPen(brush.color())
+        metrics = painter.fontMetrics()
+        painter.drawText(
+            rect,
+            Qt.AlignVCenter | Qt.AlignLeft,
+            metrics.elidedText(text, Qt.ElideRight, max(0, rect.width())),
+        )
+        painter.restore()
+
+
+class _ReadWorker(QThread):
+    """后台跑 ``read_many()``：一个参数没应答就要等满超时+重试，不能占着 UI 线程。"""
+
+    done = pyqtSignal(dict)
+
+    def __init__(self, svc, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._svc = svc
+
+    def run(self) -> None:
+        try:
+            self.done.emit(self._svc.read_many())
+        except Exception as exc:  # noqa: BLE001
+            self.done.emit({"ok": False, "detail": f"读取异常：{exc}", "values": {}})
+
+
+_ORPHAN_WORKERS: list[_ReadWorker] = []
+
+
+def _prune_orphans() -> None:
+    """回收已跑完的孤儿线程；没跑完的必须留引用，否则对象被 GC 时会连线程一起崩。"""
+    _ORPHAN_WORKERS[:] = [w for w in _ORPHAN_WORKERS if w.isRunning()]
+
+
+class RadioPage(BasePage):
+    """电台参数配置页：注册表驱动表单 + 读取/预览/下发/动作。"""
+
+    page_key = "radio"
+    title = "电台配置"
+
+    def __init__(self, session, bridge, parent: QWidget | None = None) -> None:
+        super().__init__(session, bridge, parent)
+        self._row_of: dict[str, int] = {}
+        self._kind_of: dict[str, str] = {}
+        self._editors: dict[str, QWidget] = {}
+        self._read_worker: _ReadWorker | None = None
+        self._build_widgets()
+        self._load_catalog()
+        view = self.bridge.latest(Events.RADIO_PARAMS)
+        if isinstance(view, dict):
+            self._apply_view(view)
+        self._refresh_devices()
+
+    # ------------------------------------------------------------------ UI 搭建
+    def _build_widgets(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(6)
+
+        # 目标设备行：UDP 通道下同网段可能有多个模块，先发现、再按 MAC 定向读写。
+        dev_row = QHBoxLayout()
+        dev_row.setSpacing(6)
+        dev_row.addWidget(QLabel("目标设备"))
+        self.combo_device = QComboBox()
+        self.combo_device.setMinimumWidth(260)
+        self.btn_discover = QPushButton("发现/刷新")
+        self.dev_label = QLabel("尚未发现模块")
+        self.dev_label.setStyleSheet(f"color:{_DIM_COLOR.name()};")
+        dev_row.addWidget(self.combo_device)
+        dev_row.addWidget(self.btn_discover)
+        dev_row.addWidget(self.dev_label)
+        dev_row.addStretch(1)
+        root.addLayout(dev_row)
+
+        bar = QHBoxLayout()
+        bar.setSpacing(6)
+        self.btn_read = QPushButton("读取全部")
+        self.btn_preview = QPushButton("预览下发")
+        self.btn_apply = QPushButton("下发修改")
+        self.btn_clear = QPushButton("清空编辑")
+        self.btn_defaults = QPushButton("恢复出厂")
+        self.btn_reconnect = QPushButton("重新连接")
+        for b in (self.btn_read, self.btn_preview, self.btn_apply, self.btn_clear):
+            bar.addWidget(b)
+        bar.addWidget(self.btn_defaults)
+        bar.addWidget(self.btn_reconnect)
+        bar.addStretch(1)
+        self.tel_label = QLabel("等待遥测快照")
+        self.tel_label.setStyleSheet(f"color:{_DIM_COLOR.name()};")
+        bar.addWidget(self.tel_label)
+        root.addLayout(bar)
+
+        self.table = QTableWidget(0, len(_COLS))
+        self.table.setHorizontalHeaderLabels(_COLS)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.setAlternatingRowColors(True)
+        hdr = self.table.horizontalHeader()
+        hdr.setSectionResizeMode(QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(_C_CUR, QHeaderView.Fixed)
+        hdr.setSectionResizeMode(_C_RW, QHeaderView.Fixed)
+        hdr.setSectionResizeMode(_C_DESC, QHeaderView.Stretch)
+        hdr.setStretchLastSection(False)
+        self.table.setColumnWidth(_C_CUR, _CUR_COL_PX)
+        self.table.setColumnWidth(_C_RW, _RW_COL_PX)
+        self.table.setWordWrap(True)
+        self.table.setItemDelegateForColumn(_C_DESC, _SingleLineDelegate(self.table))
+        self.table.setMinimumHeight(300)
+        root.addWidget(self.table, 1)
+
+        self.preview_view = QPlainTextEdit()
+        self.preview_view.setReadOnly(True)
+        self.preview_view.setFont(mono_font())
+        self.preview_view.setPlaceholderText("“预览下发”会在这里列出将要发出的完整 AT 行")
+        self.preview_view.setMaximumHeight(140)
+        root.addWidget(self.preview_view)
+
+        self.btn_read.clicked.connect(self._on_read)
+        self.btn_preview.clicked.connect(self._on_preview)
+        self.btn_apply.clicked.connect(self._on_apply)
+        self.btn_clear.clicked.connect(self._on_clear_edits)
+        self.btn_defaults.clicked.connect(self._on_defaults)
+        self.btn_reconnect.clicked.connect(self._on_reconnect)
+        self.btn_discover.clicked.connect(self._on_discover)
+        self.combo_device.currentIndexChanged.connect(self._on_device_changed)
+
+        if self.service("link") is None:
+            self.btn_reconnect.setEnabled(False)
+            self.btn_discover.setEnabled(False)
+            self.combo_device.setEnabled(False)
+        if self.service("radio") is None:
+            for b in (
+                self.btn_read,
+                self.btn_preview,
+                self.btn_apply,
+                self.btn_clear,
+                self.btn_defaults,
+            ):
+                b.setEnabled(False)
+            self.tel_label.setText("电台服务未启用")
+            self.tel_label.setStyleSheet(f"color:{_ERR_COLOR.name()};")
+
+    # ------------------------------------------------------------------ 目标设备选择
+    @staticmethod
+    def _device_support(link) -> bool:
+        """仅 UDP 且带 select_device 的链路能按 MAC 定向；串口/mock 一律视为不支持。"""
+        return (
+            link is not None
+            and str(getattr(link, "channel", "")) == "udp"
+            and callable(getattr(link, "select_device", None))
+        )
+
+    def _current_device_mac(self, link) -> str:
+        at = getattr(link, "at", None)
+        raw = getattr(at, "target_mac", b"") if at is not None else b""
+        if isinstance(raw, bytes) and len(raw) == 6:
+            from ...transport.udp_at import format_mac
+
+            return format_mac(raw)
+        return ""
+
+    def _refresh_devices(self, modules: list[dict] | None = None) -> None:
+        """按模块表重建下拉；只读表不发网络，init 时安全。"""
+        link = self.service("link")
+        if link is None:
+            return
+        if not self._device_support(link):
+            self.combo_device.setEnabled(False)
+            self.btn_discover.setEnabled(False)
+            self.dev_label.setText("当前通道不支持选择模块")
+            return
+        self.combo_device.setEnabled(True)
+        self.btn_discover.setEnabled(True)
+        if modules is None:
+            getter = getattr(link, "at_modules", None)
+            modules = list(getter()) if callable(getter) else []
+        prev = ""
+        idx = self.combo_device.currentIndex()
+        if idx >= 0:
+            prev = str(self.combo_device.itemData(idx) or "")
+        if not prev:
+            prev = self._current_device_mac(link)
+        chosen = prev if any(str(m.get("mac", "")) == prev for m in modules) else ""
+        self.combo_device.blockSignals(True)
+        try:
+            self.combo_device.clear()
+            self.combo_device.addItem("自动（首个在线模块）", "")
+            for m in modules:
+                mac = str(m.get("mac", ""))
+                tag = "在线" if m.get("online") else "离线"
+                self.combo_device.addItem(f"{mac}（{tag}）", mac)
+            pos = self.combo_device.findData(chosen)
+            self.combo_device.setCurrentIndex(pos if pos >= 0 else 0)
+        finally:
+            self.combo_device.blockSignals(False)
+        if modules:
+            online_n = sum(1 for m in modules if m.get("online"))
+            self.dev_label.setText(f"共 {len(modules)} 个，在线 {online_n} 个")
+        else:
+            self.dev_label.setText("未发现模块，点“发现/刷新”")
+        if prev and chosen != prev:
+            # 原选中模块已消失：回到"自动"并让服务层同步清掉定向目标。
+            self._on_device_changed()
+
+    def _on_discover(self) -> None:
+        link = self.service("link")
+        discover = getattr(link, "discover", None) if link is not None else None
+        if not callable(discover):
+            self.say("当前会话没有链路服务，无法发现", 8000)
+            return
+        self.btn_discover.setEnabled(False)
+        self.btn_discover.setText("发现中…")
+        try:
+            try:
+                res = dict(discover())
+            except Exception as exc:  # noqa: BLE001
+                self.say(f"发现失败：{exc}", 10000)
+                return
+        finally:
+            self.btn_discover.setText("发现/刷新")
+            self.btn_discover.setEnabled(True)
+        modules = list(res.get("modules") or [])
+        if not modules:
+            getter = getattr(link, "at_modules", None)
+            modules = list(getter()) if callable(getter) else []
+        self._refresh_devices(modules)
+        self.say(str(res.get("detail") or f"发现完成：{len(modules)} 个"))
+
+    def _on_device_changed(self, _index: int = 0) -> None:
+        idx = self.combo_device.currentIndex()
+        if idx < 0:
+            return
+        mac = str(self.combo_device.itemData(idx) or "")
+        link = self.service("link")
+        if not self._device_support(link):
+            return
+        radio = self.service("radio")
+        switcher = getattr(radio, "select_device", None) if radio is not None else None
+        if not callable(switcher):
+            return
+        res = dict(switcher(mac) or {})
+        if not res.get("ok"):
+            self.say(f"切换失败：{res.get('detail', '')}", 8000)
+            return
+        # 换模块 = 换一套参数：清掉未下发的编辑，重读注册表并回填该设备缓存视图。
+        self._on_clear_edits()
+        self._load_catalog()
+        view = self.bridge.latest(Events.RADIO_PARAMS)
+        if isinstance(view, dict):
+            self._apply_view(view)
+        self.say(
+            str(res.get("detail") or (f"已切换目标模块 {mac}" if mac else "已恢复自动选择"))
+        )
+
+    def _load_catalog(self) -> None:
+        svc = self.service("radio")
+        if svc is None:
+            return
+        rows = svc.catalog()
+        self.table.setRowCount(0)
+        self._row_of.clear()
+        self._kind_of.clear()
+        self._editors.clear()
+        current_group = None
+        for row in rows:
+            name = str(row.get("name", ""))
+            group = str(row.get("group", ""))
+            if group != current_group:
+                self._insert_group_row(group)
+                current_group = group
+            table_row = self.table.rowCount()
+            self.table.insertRow(table_row)
+            self._row_of[name] = table_row
+
+            title_item = QTableWidgetItem(str(row.get("title", name)))
+            title_item.setToolTip(f"{name}  (AT+{row.get('at', name)})")
+            self.table.setItem(table_row, _C_NAME, title_item)
+
+            cur_text = self._display(name, row.get("value"))
+            cur_item = QTableWidgetItem(cur_text)
+            cur_item.setFont(_cur_font())
+            cur_item.setTextAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+            self._tint_current(cur_item, cur_text)
+            self.table.setItem(table_row, _C_CUR, cur_item)
+
+            rw = str(row.get("rw", "ro"))
+            self._kind_of[name] = self._row_action_kind(row, rw)
+            self.table.setCellWidget(table_row, _C_EDIT, self._make_editor(row, rw))
+
+            bound_item = QTableWidgetItem(str(row.get("bound", "")))
+            bound_item.setForeground(_DIM_COLOR)
+            self.table.setItem(table_row, _C_BOUND, bound_item)
+
+            rw_item = QTableWidgetItem(_RW_LABELS.get(rw, rw))
+            if rw == "ro":
+                rw_item.setForeground(_DIM_COLOR)
+            self.table.setItem(table_row, _C_RW, rw_item)
+
+            desc = str(row.get("desc", ""))
+            persist = str(row.get("persist", ""))
+            tip = desc if not persist else f"{desc}\n掉电保存：{persist}"
+            desc_item = QTableWidgetItem(desc)
+            desc_item.setToolTip(tip)
+            self.table.setItem(table_row, _C_DESC, desc_item)
+        self.table.resizeRowsToContents()
+
+    @staticmethod
+    def _row_action_kind(row: dict, rw: str) -> str:
+        if rw == "ro":
+            return "ro"
+        if str(row.get("group", "")) == registry.G_ACTION:
+            return "action"
+        return "write"
+
+    def _insert_group_row(self, group: str) -> None:
+        table_row = self.table.rowCount()
+        self.table.insertRow(table_row)
+        self.table.setSpan(table_row, 0, 1, len(_COLS))
+        for col in range(len(_COLS)):
+            item = QTableWidgetItem(group if col == 0 else "")
+            item.setFlags(Qt.NoItemFlags)
+            item.setBackground(_GROUP_BG)
+            font = item.font()
+            font.setBold(True)
+            item.setFont(font)
+            self.table.setItem(table_row, col, item)
+
+    def _make_editor(self, row: dict, rw: str) -> QWidget:
+        name = str(row.get("name", ""))
+        if rw == "ro":
+            hold = QLineEdit()
+            hold.setPlaceholderText("只读")
+            hold.setEnabled(False)
+            return hold
+        options = list(row.get("options") or ())
+        if options:
+            combo = QComboBox()
+            combo.addItem("")
+            for opt in options:
+                combo.addItem(str(opt))
+            combo.setCurrentIndex(0)
+            self._editors[name] = combo
+            return combo
+        edit = QLineEdit()
+        edit.setFont(mono_font())
+        edit.setPlaceholderText("留空不发送")
+        unit = str(row.get("unit", "")).strip()
+        if unit:
+            edit.setToolTip(f"单位：{unit}")
+        self._editors[name] = edit
+        return edit
+
+    # ------------------------------------------------------------------ 值显示
+    def _display(self, name: str, value: object) -> str:
+        if value is None:
+            return ""
+        spec = registry.spec_for(name)
+        scale = float(getattr(spec, "scale", 0.0) or 0.0) if spec is not None else 0.0
+        if isinstance(value, bool):
+            return "是" if value else "否"
+        if isinstance(value, (list, tuple)):
+            parts = [f"{v / scale:g}" if scale else str(v) for v in value]
+            return " / ".join(parts)
+        if isinstance(value, (int, float)):
+            if scale:
+                return f"{value / scale:g}"
+            if isinstance(value, float):
+                return f"{value:g}"
+            return str(value)
+        return str(value)
+
+    @staticmethod
+    def _tint_current(item: QTableWidgetItem, text: str) -> None:
+        """读到值染绿底、错误码染红底，空值恢复默认底色。"""
+        if not text:
+            item.setBackground(QBrush())
+        elif _is_error_text(text):
+            item.setBackground(_ERR_BG)
+        else:
+            item.setBackground(_OK_BG)
+
+    def _set_current(self, name: str, text: str) -> None:
+        row = self._row_of.get(name)
+        if row is None:
+            return
+        item = self.table.item(row, _C_CUR)
+        if item is None:
+            item = QTableWidgetItem()
+            item.setFont(_cur_font())
+            item.setTextAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+            self.table.setItem(row, _C_CUR, item)
+        item.setText(text)
+        self._tint_current(item, text)
+        self.table.resizeRowToContents(row)
+
+    def _collect_edits(self) -> list[tuple[str, str]]:
+        out: list[tuple[str, str]] = []
+        for name, widget in self._editors.items():
+            if self._kind_of.get(name) == "ro":
+                continue
+            if isinstance(widget, QComboBox):
+                if widget.currentIndex() <= 0:
+                    continue
+                out.append((name, widget.currentText()))
+            elif isinstance(widget, QLineEdit):
+                text = widget.text().strip()
+                if text:
+                    out.append((name, text))
+        return out
+
+    # ------------------------------------------------------------------ 动作
+    def _on_read(self) -> None:
+        svc = self.service("radio")
+        if svc is None or self._read_worker is not None:
+            return
+        self.btn_read.setEnabled(False)
+        self.btn_read.setText("读取中…")
+        _prune_orphans()
+        worker = _ReadWorker(svc, self)
+        worker.done.connect(self._on_read_done)
+        worker.finished.connect(self._on_read_finished)
+        self._read_worker = worker
+        worker.start()
+
+    def _on_read_finished(self) -> None:
+        worker = self._read_worker
+        self._read_worker = None
+        if worker is not None:
+            worker.deleteLater()
+        self.btn_read.setEnabled(True)
+        self.btn_read.setText("读取全部")
+
+    def _on_read_done(self, res: dict) -> None:
+        values = res.get("values") or {}
+        for key, one in values.items():
+            name = registry.resolve_key(key) or str(key)
+            if not isinstance(one, dict):
+                continue
+            if one.get("ok"):
+                self._set_current(name, self._display(name, one.get("value")))
+                continue
+            err = str(one.get("detail") or "")
+            if _is_error_text(err):
+                self._set_current(name, err)
+        detail = str(res.get("detail") or "")
+        if res.get("ok"):
+            self.say(f"读取完成：{detail or f'{len(values)}/{len(values)} 项'}")
+            return
+        link = self.service("link")
+        if link is not None and not link.is_open:
+            self.say(f"读取失败：AT 通道未打开，{self._link_reason(link)}", 15000)
+            return
+        reason = ""
+        for one in values.values():
+            if isinstance(one, dict) and not one.get("ok"):
+                reason = str(one.get("detail") or "")
+                break
+        self.say(f"读取失败：{detail or '全部参数无应答'}"
+                 + (f"，第一条原因：{reason}" if reason else ""), 10000)
+
+    def _link_reason(self, link) -> str:
+        """拼出"通道为什么打不开"：LinkService 记录的原因 + 传输层残留原因 + 通道对应提示。"""
+        err = ""
+        if hasattr(link, "summary"):
+            err = str(link.summary().get("error") or "").strip()
+        if not err:
+            transport = getattr(link, "transport", None)
+            err = str(getattr(transport, "state_detail", "") or "").strip()
+        head = f"失败原因：{err}。" if err else "未见记录的失败原因（可能从未打开或打开后被拔出）。"
+        if str(getattr(link, "channel", "")) == "udp":
+            return (
+                f"{head}网口是本模块 AT 的唯一配置入口，协议为 UDP 56789 广播上的"
+                "成帧 AT（先 op1 发现握手、AT 帧再定向模块 MAC），按序排查：电台处于"
+                "唤醒模式（手册第六章首行注意）→ 网线接通 → 本机网卡设为 192.168.1.x "
+                "静态 IP → 防火墙放行 UDP 56789，再点“重新连接”。可用 "
+                "tools/probe_udp_at.py 查看模块 MAC 清单；多模块时在页顶“发现/刷新”"
+                "选择目标设备（或把目标 MAC 填进 udp_at.target_mac）。串口是纯透传"
+                "通道，AT 发串口只会透传到远端，程序不会回退串口"
+            )
+        ports = "、".join(
+            f"{p['device']}（{p['description']}）" for p in list_serial_ports()[:8]
+        ) or "一个都没有"
+        return (
+            f"{head}本模块 AT 只走网口配置（手册 6.2），串口是纯透传通道："
+            f"向串口发 AT 会被透传到远端、不为本机电台解析。当前可见串口：{ports}；"
+            "请把 config/app.yaml 的 at.channel 改为 udp，按网口提示排查后点“重新连接”"
+        )
+
+    def _on_reconnect(self) -> None:
+        link = self.service("link")
+        if link is None:
+            return
+        self.btn_reconnect.setEnabled(False)
+        self.btn_reconnect.setText("重连中…")
+        try:
+            ok = link.restart()
+        finally:
+            self.btn_reconnect.setText("重新连接")
+            self.btn_reconnect.setEnabled(True)
+        if ok:
+            self.say(f"AT 通道已重新打开（{link.channel}）")
+            return
+        self.say(f"重连失败：{self._link_reason(link)}", 20000)
+
+    def on_close(self) -> None:
+        worker = self._read_worker
+        if worker is not None:
+            self._read_worker = None
+            for sig, slot in ((worker.done, self._on_read_done),
+                              (worker.finished, self._on_read_finished)):
+                try:
+                    sig.disconnect(slot)
+                except TypeError:
+                    pass
+            if not worker.wait(5000):
+                # 还在等超时：摘掉父子关系并保命引用，否则页面析构时线程仍活着会崩
+                worker.setParent(None)
+                _ORPHAN_WORKERS.append(worker)
+        super().on_close()
+
+    def _on_preview(self) -> None:
+        edits = self._collect_edits()
+        if not edits:
+            self.preview_view.setPlainText("（新值列留空即不发送，预览为空）")
+            self.say("没有待预览的修改")
+            return
+        bad: list[str] = []
+        good: list[str] = []
+        for name, text in edits:
+            ok, value, err = registry.encode(name, text)
+            if not ok:
+                bad.append(f"✗ {name}={text} —— {err}")
+                continue
+            spec = registry.spec_for(name)
+            wire = spec.wire_name if spec is not None else name.upper()
+            good.append(format_at(wire, value if value else None))
+        head = f"—— 计划下发 {len(good)} 条 ——" if good else "—— 无可下发项 ——"
+        self.preview_view.setPlainText("\n".join(bad + [head] + good))
+        if bad:
+            self.say(f"预览：{len(bad)} 项校验失败，修正后才能下发", 8000)
+        else:
+            self.say(f"预览：{len(good)} 条待下发，确认后点“下发修改”")
+
+    def _on_apply(self) -> None:
+        svc = self.service("radio")
+        if svc is None:
+            return
+        edits = self._collect_edits()
+        if not edits:
+            self.say("没有待下发的修改（新值列留空即不发送）")
+            return
+        lines: list[str] = []
+        ok_n = 0
+        for name, text in edits:
+            if self._kind_of.get(name) == "action":
+                res = svc.action(name, text)
+            else:
+                res = svc.write(name, text)
+            ok = bool(res.get("ok"))
+            if ok:
+                ok_n += 1
+                self._set_current(name, text)
+            detail = str(res.get("detail") or res.get("error") or "")
+            lines.append(f"{'OK ' if ok else 'FAIL'} {name}={text}  {detail}")
+        self.preview_view.setPlainText("\n".join(lines))
+        if ok_n == len(edits):
+            self.say(f"下发完成 {ok_n}/{len(edits)}")
+        else:
+            self.say(f"下发 {ok_n}/{len(edits)} 成功，失败项见预览区", 8000)
+
+    def _on_clear_edits(self) -> None:
+        for widget in self._editors.values():
+            if isinstance(widget, QComboBox):
+                widget.setCurrentIndex(0)
+            elif isinstance(widget, QLineEdit):
+                widget.clear()
+        self.say("已清空新值列")
+
+    def _on_defaults(self) -> None:
+        svc = self.service("radio")
+        if svc is None:
+            return
+        res = svc.load_defaults()
+        self._load_catalog()
+        if res.get("ok"):
+            self.say("已恢复本地参数副本为出厂默认（未下发到模块）")
+        else:
+            self.say(f"恢复默认失败：{res.get('detail', '')}", 8000)
+
+    # ------------------------------------------------------------------ 桥刷新
+    def on_slot(self, topic: str) -> None:
+        if topic != Events.RADIO_PARAMS:
+            return
+        view = self.bridge.latest(topic)
+        if isinstance(view, dict):
+            self._apply_view(view)
+
+    def _apply_view(self, view: dict) -> None:
+        for key, name in _VIEW_KEYS.items():
+            if key in view and view[key] is not None:
+                self._set_current(name, self._display(name, view[key]))
+        connected = view.get("connected")
+        if isinstance(connected, bool):
+            self._set_current("CONN_STATE", "已连接" if connected else "未连接")
+        ts = view.get("ts")
+        stamp = time.strftime("%H:%M:%S", time.localtime(ts)) if ts else "--:--:--"
+        link = "已连接" if connected else "未连接"
+        endpoint = str(view.get("endpoint", "local"))
+        self.tel_label.setText(f"遥测 {stamp} · {endpoint} · {link}")
+        self.tel_label.setStyleSheet(
+            f"color:{_DIM_COLOR.name() if connected else _ERR_COLOR.name()};"
+        )

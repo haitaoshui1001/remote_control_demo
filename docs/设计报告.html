@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EWD611 数传图传上位机控制软件 · 设计报告</title>
+<style>
+:root{
+  --ink:#2f3b4c; --dim:#6b7482; --line:#dde3ea; --accent:#1b5a8a;
+  --bg:#f7f9fb; --card:#ffffff; --side:#eef3f8; --ok:#1b7a43; --warn:#b25a00; --bad:#b3261e;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:"SimSun","宋体",serif;font-size:15px;line-height:1.25;}
+h1,h2,h3,h4,h5,.sheim{font-family:"SimHei","黑体","Microsoft YaHei",sans-serif;font-weight:bold;line-height:1.25;}
+h1{font-size:24px;margin:0.4em 0 0.6em;}
+h2{font-size:20px;margin:1.4em 0 0.6em;padding-left:10px;border-left:5px solid var(--accent);}
+h3{font-size:17px;margin:1.2em 0 0.5em;}
+h4{font-size:15px;margin:1em 0 0.4em;}
+p{margin:0.5em 0;text-indent:2em;}
+li{margin:0.25em 0;}
+li p{text-indent:0;margin:0.2em 0;}
+table{border-collapse:collapse;width:100%;margin:0.8em 0;font-size:14px;background:var(--card);}
+th,td{border:1px solid var(--line);padding:6px 9px;line-height:1.25;vertical-align:top;}
+th{background:var(--side);font-family:"SimHei","黑体",sans-serif;text-align:left;}
+td code,p code,li code{font-family:Consolas,"Courier New",monospace;font-size:13px;background:#eef1f5;padding:1px 4px;border-radius:3px;}
+pre.code{font-family:Consolas,"Courier New",monospace;font-size:13px;background:#f0f3f7;border:1px solid var(--line);border-radius:6px;padding:10px 12px;overflow:auto;line-height:1.35;}
+a{color:var(--accent);}
+.layout{display:block;}
+aside#toc{position:fixed;left:0;top:0;bottom:0;width:290px;overflow-y:auto;background:var(--card);
+  border-right:1px solid var(--line);padding:16px 12px 30px;z-index:10;}
+aside#toc .brand{font-family:"SimHei","黑体",sans-serif;font-size:16px;color:var(--accent);margin-bottom:4px;}
+aside#toc .sub{font-size:12px;color:var(--dim);margin-bottom:10px;}
+.btnrow{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 12px;}
+.btn{display:inline-block;border:1px solid var(--accent);background:#fff;color:var(--accent);
+  border-radius:5px;padding:4px 10px;font-size:13px;cursor:pointer;text-decoration:none;
+  font-family:"Microsoft YaHei",sans-serif;}
+.btn:hover{background:var(--accent);color:#fff;}
+.btn.pri{background:var(--accent);color:#fff;}
+.btn.pri:hover{background:#144a72;}
+#toc-list{list-style:none;margin:0;padding:0;font-size:13.5px;font-family:"Microsoft YaHei",sans-serif;}
+#toc-list ul{list-style:none;margin:0;padding:0;}
+#toc-list a{display:block;color:var(--ink);text-decoration:none;padding:4px 6px;border-radius:4px;
+  line-height:1.3;border-left:3px solid transparent;}
+#toc-list a:hover{background:var(--side);}
+#toc-list a.active{background:#e2eef8;border-left-color:var(--accent);color:var(--accent);font-weight:bold;}
+#toc-list .lv2 a{padding-left:8px;}
+#toc-list .lv3 a{padding-left:24px;color:var(--dim);}
+#toc-list .lv4 a{padding-left:40px;color:var(--dim);font-size:12.5px;}
+main.main{margin-left:290px;max-width:960px;padding:26px 42px 90px;}
+.doc-head{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:18px 24px;margin-bottom:22px;}
+.doc-head .meta{color:var(--dim);font-size:13px;font-family:"Microsoft YaHei",sans-serif;}
+figure.mmd{margin:1em 0;padding:10px 12px;background:var(--card);border:1px solid var(--line);border-radius:8px;}
+figure.mmd figcaption{font-family:"SimHei","黑体",sans-serif;font-size:13.5px;color:var(--accent);margin-bottom:6px;}
+.mmd-toolbar{display:flex;gap:6px;margin-bottom:6px;font-family:"Microsoft YaHei",sans-serif;}
+.mmd-toolbar button{border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:4px;
+  min-width:34px;padding:3px 8px;font-size:13px;cursor:pointer;}
+.mmd-toolbar button:hover{border-color:var(--accent);color:var(--accent);}
+.mmd-stage{overflow:auto;max-height:520px;border:1px dashed var(--line);border-radius:6px;padding:8px;background:#fcfdfe;}
+.mmd-stage .mermaid{font-family:inherit;margin:0;background:transparent;border:none;padding:0;}
+.mmd-note{font-size:12.5px;color:var(--dim);margin-top:4px;text-indent:0;font-family:"Microsoft YaHei",sans-serif;}
+.modal{display:none;position:fixed;inset:0;background:rgba(20,30,40,0.45);z-index:50;padding:6vh 4vw;}
+.modal.open{display:block;}
+.modal .box{background:#fff;border-radius:8px;max-width:860px;margin:0 auto;padding:16px 18px;}
+.modal h3{margin-top:0;}
+.modal textarea{width:100%;height:46vh;font-family:Consolas,monospace;font-size:13px;border:1px solid var(--line);
+  border-radius:6px;padding:10px;background:#f8fafc;resize:vertical;line-height:1.4;}
+.modal .row{display:flex;gap:8px;justify-content:flex-end;margin-top:10px;}
+.tag{display:inline-block;font-size:12px;border:1px solid var(--line);border-radius:4px;padding:1px 7px;
+  background:var(--side);font-family:"Microsoft YaHei",sans-serif;margin-right:4px;}
+.callout{border-left:4px solid var(--accent);background:#eef5fb;padding:8px 14px;border-radius:0 6px 6px 0;margin:0.8em 0;}
+.callout.warn{border-left-color:var(--warn);background:#fdf3e6;}
+#top-btn{position:fixed;right:22px;bottom:22px;z-index:20;display:none;}
+@media (max-width:900px){aside#toc{position:static;width:auto;border-right:none;}main.main{margin-left:0;padding:16px;}}
+</style>
+</head>
+<body>
+<div class="layout">
+<aside id="toc">
+  <div class="brand">EWD611 上位机 · 设计报告</div>
+  <div class="sub">v1.5 · 2026-10-07（机器人遥测/运动接入 Wheeltec 底盘协议、透传备注语义化；视频降延迟改造与 RTSP 取流 TCP/UDP 界面可切换；回归基线 565 条）· 点击目录可跳转</div>
+  <div class="btnrow">
+    <button class="btn pri" onclick="downloadSelf()">⬇ 下载本页</button>
+    <a class="btn" href="./EWD611上位机文档包.zip" download>🗜 文档打包下载</a>
+    <a class="btn" href="./操作部署手册.html">📖 部署手册</a>
+  </div>
+  <div id="toc-list"></div>
+</aside>
+
+<main class="main">
+<div class="doc-head">
+  <h1>EWD611-868NW33 数传图传模块上位机控制软件<br>设计与实现报告</h1>
+  <div class="meta">项目代号：remote_demo ｜ 版本：v1.5 ｜ 日期：2026-10-07（含遥测状态栏、运动控制迭代；机器人上下行帧接入 Wheeltec 底盘协议并支持透传备注语义化；视频链路降延迟改造（收流窗口 + 放帧队列时间基跳帧）；RTSP 取流传输 TCP/UDP 界面可切换并自动写回配置；回归基线 565 条）｜ 配套文档：《操作部署手册》</div>
+</div>
+
+<h2>1 项目概述</h2>
+
+<h3>1.1 背景与目标</h3>
+<p>项目配备两台 EWD611-868NW33（485 版）数传图传模块与一台网络摄像头，构成"远端采集—无线图传/数传—本地坐席"的链路：远端节点由摄像头接数传图传模块（模块 485 口再挂待控制设备），本地节点通过网口（RTSP 视频流）和 485 转 USB（AT 指令与透传数据）连接操作笔记本。本报告描述为该链路开发的 Windows 上位机控制软件的设计与实现。</p>
+<p>软件目标按优先级归纳为四项：显示摄像头图像；通过 485 通道透传控制指令；配置图传模块关键参数并显示对端发来的数据；显示信道关键参数（RSSI、EVM、组网状态等）。工程目标为模块化、层次化、解耦合，Python 实现，独立 conda 环境，配套依赖清单、设计报告与部署手册。</p>
+
+<h3>1.2 系统拓扑</h3>
+<figure class="mmd"><figcaption>图 1-1 硬件连接拓扑</figcaption>
+<div class="mmd-toolbar"><span class="mmd-btns"></span></div>
+<div class="mmd-stage"><pre class="mermaid">
+flowchart LR
+  CAM["网络摄像头"] -- "网线 / RTSP" --> REMOTE["远端 EWD611-868NW33"]
+  DEV["待控制设备"] -- "RS485" --> REMOTE
+  REMOTE == "868MHz 无线链路" ==> LOCAL["本地 EWD611-868NW33"]
+  LOCAL -- "以太网口 RTSP 视频" --> PC["操作笔记本"]
+  LOCAL -- "485 转 USB：AT 与透传" --> PC
+  PC --- GUI["上位机软件 remote_demo"]
+</pre></div>
+<div class="mmd-note">图注：实线为有线连接，粗线为无线空口；摄像头经远端模块回传视频至本地模块网口，控制指令经 485 总线双向透传。</div>
+</figure>
+
+<h3>1.3 需求与功能映射</h3>
+<table>
+<tr><th>用户需求</th><th>落地模块</th><th>交付状态</th></tr>
+<tr><td>显示图像</td><td><code>services/video.py</code> + 视频页</td><td>RTSP 子码流解码显示（TCP/UDP 可切换）、降延迟跳帧、录制、抓图，已交付</td></tr>
+<tr><td>485 透传控制指令</td><td><code>protocol/passthrough.py</code> + 控制台页 + 数据页</td><td>Hex/ASCII 双向透传、模板库、CRC16 自动追加，已交付</td></tr>
+<tr><td>配置图传模块参数并显示对端数据</td><td><code>protocol/param_registry.py</code> + <code>services/radio.py</code> + 电台配置页</td><td>28 条参数注册表、读取/编辑/预览/下发，已交付</td></tr>
+<tr><td>显示信道关键参数</td><td><code>services/link.py</code> + 信道监控页</td><td>RSSI/EVM 历史曲线、链路快照、STA 列表，已交付</td></tr>
+<tr><td>显示对端机器人遥测（状态/电压/速度/位置等）</td><td><code>protocol/telemetry_frames.py</code> + <code>services/telemetry.py</code> + 视频页遥测状态栏</td><td>Wheeltec 底盘反馈帧解析（占位帧保留备选）、边沿告警、迷你曲线与 CSV 导出，已交付</td></tr>
+<tr><td>AT 交互与运行日志</td><td><code>ui/pages/log_page.py</code></td><td>三源合屏日志、级别过滤、录制路径，已交付</td></tr>
+</table>
+
+<h2>2 需求分析与设计原则</h2>
+
+<h3>2.1 功能需求</h3>
+<p>界面为单窗口多页签结构，共六个功能页：视频、透传控制台、数据、电台配置、信道监控、日志。命令行提供 <code>selfcheck</code>（无硬件全链路自检）、<code>config</code>（查看/生成配置）、<code>templates</code>（指令模板校验）、<code>ports</code>（串口探测）、<code>gui</code>（启动界面）五个子命令。</p>
+
+<h3>2.2 非功能需求</h3>
+<table>
+<tr><th>维度</th><th>要求</th><th>实现手段</th></tr>
+<tr><td>解耦合</td><td>层与层、服务与界面互不直连</td><td>事件总线发布订阅 + UI 桥单点投递，服务层零 PyQt5 依赖</td></tr>
+<tr><td>可靠性</td><td>无硬件/断线时界面可用并明确降级</td><td>全服务返回结构化结果不抛裸异常；页面降级态；自动重连</td></tr>
+<tr><td>实时性</td><td>视频低延迟、指令即时回显</td><td>解码线程 + 帧率上限丢帧；AT 超时 1500ms 可重试；总线合并投递</td></tr>
+<tr><td>可测试性</td><td>CI 可离线运行</td><td>mock 传输/电台/视频源；QT_QPA_PLATFORM=offscreen；565 条 pytest</td></tr>
+<tr><td>可维护性</td><td>参数变更集中管理</td><td>参数注册表为唯一真源，表单/校验/编解码同源派生</td></tr>
+</table>
+
+<h3>2.3 设计原则</h3>
+<p>（1）分层单向依赖：ui → services → protocol → transport → core，禁止反向引用；（2）消息驱动：跨层数据只经事件总线以带主题的消息流动，主题语义分为合并型（COALESCED，只关心最新值）与流型（STREAM，逐条不可丢）；（3）线程边界收口：后台线程的数据只经 UiBridge  QTimer 节拍进入 Qt 主线程；（4）配置单一真源：任何覆盖（命令行 <code>--set</code>、程序内 overrides）汇入同一条 load_config → apply_overrides → _coerce 路径；（5）一切可 mock：不插硬件也能完整走通全部链路。</p>
+
+<h2>3 系统总体架构</h2>
+
+<h3>3.1 分层架构</h3>
+<figure class="mmd"><figcaption>图 3-1 软件分层架构</figcaption>
+<div class="mmd-toolbar"><span class="mmd-btns"></span></div>
+<div class="mmd-stage"><pre class="mermaid">
+flowchart TB
+  subgraph U["界面层 hmi.ui"]
+    MW["主窗口 / 六页面"]
+    BR["UiBridge 主线程投递"]
+  end
+  subgraph S["服务层 hmi.services"]
+    SES["Session 装配"]
+    LK["LinkService 轮询"]
+    RD["RadioService 参数"]
+    VD["VideoService"]
+    PT["PassthroughService"]
+    RC["RecordService 落盘"]
+    MO["MotionService 运动控制"]
+  end
+  subgraph P["协议层 hmi.protocol"]
+    AC["AtClient / at_codec"]
+    PR["param_registry 28 条"]
+    TL["telemetry 遥测解析"]
+    TP["passthrough + templates"]
+  end
+  subgraph T["传输层 hmi.transport"]
+    SR["串口 485 转 USB"]
+    UD["UDP AT 通道"]
+    RT["RTSP 拉流"]
+    MK["mock 仿真"]
+  end
+  subgraph C["核心层 hmi.core"]
+    EB["事件总线 events"]
+    CF["配置 config"]
+    MD["数据模型 models"]
+    LG["日志 logger"]
+  end
+  MW --> BR
+  BR --> EB
+  SES --> LK --> AC --> SR
+  LK --> AC --> UD
+  RD --> PR --> AC
+  VD --> RT
+  PT --> TP --> SR
+  MO -- vx/vr 指令帧 --> PT
+  RC --> EB
+  MK -. 仿真注入 .- LK
+  MK -. 仿真注入 .- VD
+</pre></div>
+<div class="mmd-note">依赖方向自上而下单向；虚线为 mock 源在配置 app.mock=true 时替换真实传输。</div>
+</figure>
+
+<h3>3.2 模块清单</h3>
+<table>
+<tr><th>包</th><th>模块</th><th>职责</th></tr>
+<tr><td rowspan="5">core</td><td><code>config.py</code></td><td>YAML 八段配置装载、点号路径覆盖、类型强制与校验告警</td></tr>
+<tr><td><code>events.py</code></td><td>线程安全发布订阅总线，主题常量与流/合并两种投递语义</td></tr>
+<tr><td><code>models.py</code></td><td>AtExchange / LinkSnapshot / StaInfo / AlarmEvent 等数据类</td></tr>
+<tr><td><code>logger.py</code></td><td>控制台与滚动文件日志装配</td></tr>
+<tr><td><code>utils.py</code></td><td>parse_bool、safe_int、hex 文本等无副作用工具</td></tr>
+<tr><td rowspan="4">transport</td><td><code>serial_transport.py</code></td><td>pyserial 收发、空闲间隔分帧、自动端口检测</td></tr>
+<tr><td><code>udp_at.py</code></td><td>UDP AT 通道与端口探测</td></tr>
+<tr><td><code>rtsp.py</code></td><td>PyAV 拉流解码出帧，TCP/UDP 取流与 socket 缓冲设置</td></tr>
+<tr><td><code>base.py</code></td><td>传输抽象接口</td></tr>
+<tr><td rowspan="7">protocol</td><td><code>at_codec.py</code></td><td>AT 行编解码、CRLF、OK/ERROR 判定、唤醒间隔</td></tr>
+<tr><td><code>at_client.py</code></td><td>请求-应答事务、超时重试、非 solicited 行捕获</td></tr>
+<tr><td><code>param_registry.py</code></td><td>28 条参数规格、校验、编码/解码、写入计划</td></tr>
+<tr><td><code>telemetry.py</code></td><td>AT 应答文本解析为链路快照字段</td></tr>
+<tr><td><code>telemetry_frames.py</code></td><td>机器人上下行帧编解码：Wheeltec 底盘协议（11 字节下行速度帧 / 24 字节上行反馈帧）、二进制与 ASCII 占位解析器、备注语义化、假帧生成</td></tr>
+<tr><td><code>passthrough.py</code></td><td>Hex/ASCII 帧封装、CRC16、回复配对</td></tr>
+<tr><td><code>templates.py</code></td><td>YAML 指令模板库与占位符</td></tr>
+<tr><td rowspan="8">services</td><td><code>session.py</code></td><td>build_session 统一装配、生命周期 start/stop</td></tr>
+<tr><td><code>link.py</code></td><td>LinkMonitor 周期轮询、快照缓存、历史、告警发布</td></tr>
+<tr><td><code>radio.py</code></td><td>参数读写门面，全接口返回 dict 不抛异常</td></tr>
+<tr><td><code>video.py</code></td><td>拉流线程、帧率上限、放帧队列跳帧、OSD、录制联动、TCP/UDP 传输切换</td></tr>
+<tr><td><code>passthrough.py</code></td><td>485 数据收发服务与记录流</td></tr>
+<tr><td><code>record.py</code></td><td>AT 日志、事件日志、字节流、链路 CSV、录像与抓图</td></tr>
+<tr><td><code>telemetry.py</code></td><td>机器人遥测旁路解析、节流发布、新鲜度与边沿告警、里程与 CSV 落盘</td></tr>
+<tr><td><code>motion.py</code></td><td>方向运动控制：vx/vr 双通道斜坡、限幅、周期重发与停止帧补发</td></tr>
+<tr><td rowspan="5">ui</td><td><code>main_window.py</code></td><td>页签装配、状态栏、退出确认</td></tr>
+<tr><td><code>bridge.py</code></td><td>UiBridge：总线的 Qt 侧批量投递器</td></tr>
+<tr><td><code>pages/*</code></td><td>BasePage 契约与六个功能页</td></tr>
+<tr><td><code>widgets/telemetry_bar.py</code></td><td>视频页底部遥测状态栏（数字格 + 迷你曲线 + 导出）</td></tr>
+<tr><td><code>widgets/motion_pad.py</code></td><td>视频页十字方向盘（四方向按钮 + 目标/当前速度读数 + 停用降级态）</td></tr>
+<tr><td>mock / cli</td><td><code>radio.py</code> <code>video.py</code>；<code>cli/main.py</code></td><td>仿真电台与视频源；五个子命令与参数解析</td></tr>
+</table>
+
+<h3>3.3 事件总线与数据流</h3>
+<figure class="mmd"><figcaption>图 3-2 数据流：总线与 UI 桥</figcaption>
+<div class="mmd-toolbar"><span class="mmd-btns"></span></div>
+<div class="mmd-stage"><pre class="mermaid">
+flowchart LR
+  SRC["采集源：LinkMonitor / AtClient / 视频帧 / 告警"] -- publish topic,payload --> BUS(("事件总线<br>core/events"))
+  BUS -- "后台线程回调入队" --> BR["UiBridge<br>QTimer 200ms"]
+  BR -- "_on_batch_ready 主线程" --> PG["BasePage 子类 ×6"]
+  BUS -- 订阅 --> RC2["RecordService 落盘"]
+</pre></div>
+<div class="mmd-note">COALESCED 主题一个节拍内多次发布只取最新值投递；STREAM 主题整批有序交付。</div>
+</figure>
+
+<table>
+<tr><th>主题</th><th>负载类型</th><th>投递语义</th><th>主要消费方</th></tr>
+<tr><td><code>radio/params</code></td><td>dict（12 键参数视图）</td><td>合并 COALESCED</td><td>电台配置页、数据页</td></tr>
+<tr><td><code>radio/link</code></td><td>LinkSnapshot 数据类</td><td>合并 COALESCED</td><td>信道监控页（曲线唯一数据源）</td></tr>
+<tr><td><code>radio/at</code></td><td>AtExchange 数据类</td><td>流 STREAM</td><td>日志页 AT 流水</td></tr>
+<tr><td><code>system/alarm</code></td><td>AlarmEvent 数据类</td><td>流 STREAM</td><td>日志页告警、状态灯</td></tr>
+<tr><td><code>system/log</code></td><td>dict（ts/level/logger/text）</td><td>流 STREAM（仅 INFO 及以上）</td><td>日志页运行日志</td></tr>
+<tr><td><code>robot/telemetry</code></td><td>dict（sample/stale/age_s）</td><td>合并 COALESCED</td><td>视频页遥测状态栏</td></tr>
+<tr><td><code>robot/motion</code></td><td>dict（vx/vr/target/held/moving/sent_frames 快照）</td><td>合并 COALESCED</td><td>视频页方向盘回显（MotionPad）</td></tr>
+</table>
+<p>主题划分遵循两个判据：值只关心最新的（遥测快照、参数视图）用合并语义，避免 UI 被旧值刷屏；每条都必须留痕的（AT 事务、告警、日志）用流语义，整批交付不丢条。这一区别由 UiBridge 的投递策略保证，页面侧无需感知。</p>
+
+<h3>3.4 线程模型</h3>
+<p>共四类线程：（1）Qt 主线程，仅 UiBridge 的 QTimer 把总线数据投递给页面；（2）LinkMonitor 轮询线程，按 <code>link.poll_interval_s</code>（默认 3s）驱动 AT 读序列并发布快照；（3）串口/UDP 收发线程，负责按空闲间隔切帧；（4）RTSP 解码线程，出帧经帧率上限（默认 25fps）与迟到丢帧后送视频页。服务层与协议层完全不知道 Qt 的存在，全部跨线程交互收口在总线与桥两处，保证 offscreen 测试可以脱离界面直接驱动总线。</p>
+
+<h3>3.5 关键设计决策</h3>
+<table>
+<tr><th>决策</th><th>理由</th><th>代价与对策</th></tr>
+<tr><td>事件总线而非回调直连</td><td>页面/服务/落盘解耦，新增订阅零改动</td><td>调试链路变长 → 主题常量集中在 events.py，日志页可观察全部流量</td></tr>
+<tr><td>参数注册表单一真源</td><td>28 条参数的表单、校验、编解码、写计划同源生成，避免不一致</td><td>注册表本身需要维护 → 每条规格附默认值与来源手册章节</td></tr>
+<tr><td>AT 通道串口/UDP 可切换</td><td>现场 485 转 USB 可能占用，UDP 走本地模块网口可并行</td><td>两条通道行为差异 → 统一抽象到 transport 层接口下</td></tr>
+<tr><td>freq 类参数存原单位、编码时按 scale 换算</td><td>模块频点以 MHz×10 表达，界面直接显示 MHz</td><td>换算点遗漏风险 → 编解码只允许走 registry 的 encode/decode</td></tr>
+<tr><td>run.py 免打包入口而非 entry_points</td><td>现场部署是"拷目录 + 建环境"，免重装</td><td>不能 pip install 后全局命令 → 交付脚本 start_gui.bat 兜底</td></tr>
+</table>
+
+<h2>4 子系统详细设计</h2>
+
+<h3>4.1 配置系统</h3>
+<p>配置为八段 YAML：<code>app / video / serial / at / udp_at / link / passthrough / record / ui</code>。装载链路为 <code>load_config(path, **overrides)</code>：先由 AppConfig.load 读取并填入 dataclass 默认值，再对 overrides 逐条按点号路径写入，写入时由 <code>_coerce</code> 依据目标字段当前类型做强制转换（bool 走 parse_bool，接受 true/1/yes 等文本），未知字段与无效路径不报错、只追加到 <code>cfg.meta.warnings</code> 供 config 子命令打印。这一条链路同时服务于配置文件、命令行 <code>--set</code> 与程序内覆盖，是"配置单一真源"原则的实现。</p>
+
+<h3>4.2 传输层</h3>
+<p>串口传输以 115200-8-N-1 为准（模块 RS485 固定波特率），支持 <code>auto_detect</code> 按常见 485 转 USB 芯片 VID（1A86/10C4/2341）优先猜测端口，空闲间隔（默认 30ms）作为分帧边界，独占失败时可选回退。UDP AT 通道支持端口探测与广播扫描。RTSP 传输封装 PyAV 拉流，5 秒打开超时、双解码线程；取流传输 <code>video.transport</code> 可在 TCP/UDP 间切换（默认 tcp），UDP 分支自动把 socket <code>buffer_size</code> 提到 4 MB 防内核缓冲不足丢包，切换入口与"三处命中"实现见 5.7。mock 传输与前三种实现同一接口，供无硬件自检与演示使用。</p>
+
+<h3>4.3 协议层与 AT 事务</h3>
+<figure class="mmd"><figcaption>图 4-1 一次参数写入的 AT 事务时序</figcaption>
+<div class="mmd-toolbar"><span class="mmd-btns"></span></div>
+<div class="mmd-stage"><pre class="mermaid">
+sequenceDiagram
+    participant P as 电台配置页
+    participant R as RadioService
+    participant G as param_registry
+    participant A as AtClient
+    participant T as 串口传输
+    participant M as EWD611 模块
+    P->>R: write TXPOWER 15
+    R->>G: validate + encode
+    G-->>R: 合法, AT+TXPOWER=15
+    R->>A: exec 行
+    A->>T: 发送 + CRLF
+    T->>M: RS485 写
+    M-->>T: OK
+    T-->>A: 收行并按空闲间隔切帧
+    A-->>R: AtExchange ok rtt
+    R-->>P: 返回 dict 结果
+    A--)P: 总线 radio/at 流水入日志页
+</pre></div>
+<div class="mmd-note">AtExchange 记录方向、命令、RTT、响应行与错误，日志页据此还原全过程；透传数据在同一物理通道上与 AT 帧互斥，由 pause_passthrough 配置在 AT 事务窗口内暂停透传收发。</div>
+</figure>
+<p>参数注册表把 28 条参数分为普通可读写组、"信道遥测（只读）"组与"动作指令（只写）"组；每条规格含名称、读写属性、取值范围或选项、缩放系数与默认值。RadioService 的 read/write/plan/apply 全部返回结构化 dict，失败信息在返回值内，不向 UI 抛异常。</p>
+<p><b>失败必留痕</b>：AtClient 在真正上线指令前有"通道未绑定传输层""通道未打开""发送失败"三道前置校验，早期版本这三条路径直接抛异常而不发布 <code>AtExchange</code>，导致实机接线时出现"点读取全部没反应、日志页一条记录也没有"的排查盲区——现象与"根本没点"完全一致。现统一收敛到 <code>_fail_unsent()</code>：先向总线发布一条 <code>ok=False</code> 的 AtExchange（携带 line、channel、error 原因），再抛 AtError，使任何一次尝试都在日志页留下红色失败行，界面据第一条原因给出针对性引导。<b>读取异步化</b>：电台配置页"读取全部"会串行读十个以上参数，单参数超时 1.5s×重试，若在 UI 线程同步跑会冻结整窗分钟级、事件投递停摆。现由 <code>_ReadWorker(QThread)</code> 后台执行，按钮置灰显示"读取中…"，<code>done</code> 信号回填表格、<code>finished</code> 恢复按钮，页面关闭时等待线程收敛（超时则摘除父子关系保命，防"线程仍运行时被析构"崩溃）。<b>批量短路</b>：<code>read_many</code> 一旦命中通道级失败（未打开/未绑定），即把其余参数标记为"通道不可用，已跳过其余读取"，不再逐个空等超时，既快又避免误导为"模块全都不应答"。</p>
+
+<h3>4.4 服务层与链路轮询</h3>
+<figure class="mmd"><figcaption>图 4-2 LinkMonitor 轮询与告警状态机</figcaption>
+<div class="mmd-toolbar"><span class="mmd-btns"></span></div>
+<div class="mmd-stage"><pre class="mermaid">
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Polling: start_polling 成功
+    Polling --> Polling: 按 read_order 逐条 AT 查询<br>telemetry 解析合成 LinkSnapshot
+    Polling --> Polling: 发布 radio/link 快照
+    Polling --> Alarm: RSSI 低于 -85 或 -92<br>EVM 劣于阈值 / 丢包超限
+    Alarm --> Polling: 恢复正常
+    Polling --> Idle: stop_polling 或通道故障
+    Polling --> Degraded: 部分查询失败
+    Degraded --> Polling: 恢复
+    Degraded --> Alarm: 阈值命中
+</pre></div>
+<div class="mmd-note">快照带 degraded 与 errors 字段；历史缓存供信道页回填；阈值来自 link 配置段（rssi_warn=-85、rssi_crit=-92、evm_warn=-20）。</div>
+</figure>
+<p>会话装配入口为 <code>build_session(path, *, mock, endpoint, video, record, telemetry, motion, **overrides)</code>：装传输 → 装 AtClient → 装七个服务（其中遥测服务可由 <code>telemetry.enabled</code> 关闭、运动服务可由 <code>motion.enabled</code> 关闭或装配开关旁路）→ 返回 Session；<code>mock=None</code> 时遵循配置文件 <code>app.mock</code>。RadioService 刻意不发布 radio/params 主题，参数的发布点唯一收口在 LinkMonitor 轮询里，避免双写来源。</p>
+
+<h3>4.5 机器人遥测采集与状态栏</h3>
+<p>机器人侧经 485 送来的状态、电压、电流、电量、速度、位置由透传接收流<b>旁路</b>解析：<code>services/TelemetryService</code> 订阅 <code>pt_bytes</code> 主题且只消费 <code>rx</code> 方向字节块；解析器按 <code>telemetry.frame.protocol</code> 三选一：<code>wheeltec</code>（<b>默认</b>，机器人底盘实际协议）、<code>binary</code>（<code>AA 55</code> 头 20 字节占位帧）或 <code>ascii</code>（<code>TLM,...</code> 校验行）。Wheeltec 上行反馈帧为 24 字节定长：帧头 <code>0x7B</code> + 使能/急停标志 1 字节 + 10 个 16 位字段（前向/横向/角速度 ÷1000、三轴加速度 ÷1672、三轴角速度 ÷3753、电压 ÷1000）+ BCC 校验 + 帧尾 <code>0x7D</code>，校验不过则跳一字节重找帧头，避免半截帧串位；状态栏取其中的电压与平面速度（vx、vy 合成），电流/电量/GPS 该协议不上报即显示 <code>--</code>。<b>匹配不到帧特征的字节原样放过</b>，数据页与 Hex/ASCII 流水照常显示，解析失败只计数不吞数据。</p>
+<figure class="mmd"><figcaption>图 4-3 机器人遥测旁路解析与三节拍</figcaption>
+<div class="mmd-toolbar"><span class="mmd-btns"></span></div>
+<div class="mmd-stage"><pre class="mermaid">
+flowchart LR
+  RX["透传 rx 字节<br>pt_bytes"] --> PARSER["帧解析器<br>wheeltec / binary / ascii"]
+  MOCK["mock 10Hz 假帧"] --> FEED
+  PARSER -- "有效样本" --> FEED["feed / ingest<br>入缓冲·梯形里程"]
+  FEED -- "边沿：低压/急停/中断" --> ALM(("system/alarm"))
+  FEED -- "display_throttle_hz 节流" --> TLM(("robot/telemetry"))
+  TLM --> BAR["TelemetryBar<br>数字格 + 迷你曲线"]
+  FEED --> CSV["1s 节拍冲刷<br>telemetry_日期.csv"]
+  TICK["1s 新鲜度节拍"] -- "stale 置灰强制推" --> BAR
+</pre></div>
+<div class="mmd-note">默认解析机器人底盘实际使用的 Wheeltec 反馈帧；binary/ascii 占位格式保留作备选，换协议只需新增一个解析器并切配置，服务与界面零改动。</div>
+</figure>
+<p>一个入口三节拍：<code>feed</code>（串口回调线程）解析入缓冲，并按 <code>display_throttle_hz</code>（默认 2Hz）节流发布合并主题 <code>robot/telemetry</code>；1 秒新鲜度节拍在超过 <code>stale_after_s</code>（默认 3s）无有效帧时判定中断，"刚变过期"只告警一次并<b>强制</b>推一次事件让界面立即置灰；1 秒 CSV 节拍把积压样本冲刷到 <code>data/telemetry_日期.csv</code>；10Hz mock 节拍按当前协议组假帧走<b>同一解析路径</b>，实现无硬件演示。边沿告警（电池低压、急停、遥测中断/恢复）一律遵循"跳变才发"防刷屏规则，且恢复与置灰同样强制发布，界面灰/复即时切换。历史缓冲全量保留不受节流影响——数据完整性与显示频率解耦，累计里程按梯形积分（相邻速度均值 × Δt，Δt&gt;5s 视为断档不补）在服务层结算。</p>
+<p>界面侧 <code>ui/widgets/TelemetryBar</code> 挂视频页底部：状态/电压/电流/电量/速度/位置/定位 7 个数字格，缺数据统一显示 <code>--</code>，遥测中断整体灰字、电池低压与急停红色加粗并附悬停原因；下方双序列迷你曲线（电压与速度各自归一化）看趋势，"导出 CSV"仅发信号，由页面向服务取数、弹保存框完成复制。累计里程不再占用速度槽位、也不设切换按钮——它只在速度格的鼠标悬停提示、明细表格与导出 CSV 中给出，避免误触影响读数。控件唯一数据入口是 <code>refresh(payload)</code>，不持有服务引用，保持控件→页面→服务的单向依赖；进页时用服务历史回填曲线。</p>
+
+<h4>4.5.1 显示字段规划（需求溯源）</h4>
+<p>本小节并入原《视频页遥测状态栏方案》（2026-10-03 评审稿）的规划内容并留档。背景：视频页最下端需要主要遥测信号的曲线或数值展示（电池电压、电流、速度、位置等）；规划时机器人遥测帧格式<b>尚未由甲方给定</b>，故按"<b>字段先定、格式占位、可配置替换</b>"原则设计，首版即以占位解析器与 mock 演示交付界面效果。字段规划与最终交付对照如下：</p>
+<table>
+<tr><th>#</th><th>字段</th><th>规划显示格式</th><th>数据来源</th><th>落地要点</th></tr>
+<tr><td>1</td><td>运行状态</td><td>待机 / 自动驾驶 / 遥控 / 急停</td><td>遥测帧状态枚举码</td><td>码值→文字映射在 <code>status_map</code> 配置，协议定稿只改映射；"急停"红粗</td></tr>
+<tr><td>2</td><td>电池电压</td><td><code>24.6 V</code>（1 位小数）</td><td>遥测帧</td><td>低于 <code>low_voltage_v</code>（暂定 22.0）边沿告警变红，恢复自动解除</td></tr>
+<tr><td>3</td><td>电池电流</td><td><code>3.2 A</code>（含符号，放电为正）</td><td>遥测帧</td><td>槽位保留；机器人不上报时显示 <code>--</code></td></tr>
+<tr><td>4</td><td>剩余电量</td><td><code>78 %</code>（整数）</td><td>遥测帧</td><td>与电压同组显示</td></tr>
+<tr><td>5</td><td>速度</td><td><code>0.45 m/s</code>（2 位小数）</td><td>遥测帧</td><td>原方案曾拟"帧缺字段时回退运动解算值"，实施时删去该跨服务耦合，仅取遥测帧（见 4.5.3）</td></tr>
+<tr><td>6</td><td>累计里程</td><td>悬停速度格显示 <code>累计里程 1280.5 m</code></td><td>本机对速度梯形积分</td><td>不占独立槽位、无切换按钮；Δt&gt;5s 断档不补；明细见表格与 CSV</td></tr>
+<tr><td>7</td><td>位置</td><td>经纬度 6 位小数</td><td>遥测帧 GPS 字段</td><td>无 GPS 整体置空；坐标系待甲方确认（WGS-84/GCJ-02）</td></tr>
+<tr><td>8</td><td>定位状态与更新时间</td><td><code>有效 · 14:32:07</code></td><td>遥测帧 + 本机接收时刻</td><td>超 <code>stale_after_s</code> 整栏置灰提示"遥测中断"</td></tr>
+</table>
+<p>联调后机器人侧确认使用 Wheeltec 底盘协议，已实现为默认解析器（上行 24 字节反馈帧 + 下行 11 字节速度帧，见 4.6）。以下为规划期定义的两种占位帧格式（保留作备选，切 <code>telemetry.frame.protocol</code> 即可启用，界面零改动）：二进制 <code>AA 55 | 长度 | 状态 1B | 电压 2B(0.01V) | 电流 2B(0.01A) | 电量 1B | 速度 2B(0.001m/s) | 经纬度各 4B | XOR 校验</code>；ASCII 行 <code>TLM,2,24.61,3.21,78,0.45,116.397428,39.909236*7F</code>。数字区采用等宽数字字体避免数值跳动抖排版；窄屏时曲线区自动隐藏仅留数字。</p>
+
+<h4>4.5.2 端到端链路与方案原则</h4>
+<figure class="mmd"><figcaption>图 4-4 遥测数据流：从机器人端到状态栏</figcaption>
+<div class="mmd-toolbar"><span class="mmd-btns"></span></div>
+<div class="mmd-stage"><pre class="mermaid">
+flowchart LR
+  ROB["机器人端<br>组装遥测帧"] -- "RS485" --> ER["远端 EWD611"]
+  ER == "868MHz 空口" ==> EL["本地 EWD611"]
+  EL -- "485 转 USB" --> TR["传输层串口读取"]
+  TR --> PS["透传原始字节流"]
+  PS --> FP["TelemetryService<br>旁路截取 + 占位解析器"]
+  FP -- "字段模型 TelemetrySample" --> EB["事件总线<br>robot/telemetry 约 2Hz 节流"]
+  EB --> BAR["视频页底部状态栏<br>数字 + 迷你曲线"]
+  FP --> CSV["落盘 data/telemetry_日期.csv"]
+</pre></div>
+<div class="mmd-note">原方案图 3-1 并入。遥测与普通透传数据共用同一条 485 链路：匹配不到帧特征的字节原样放过，解析失败不吞数据；若协议定稿后遥测需分通道，仅在解析器加路由条件。</div>
+</figure>
+<p>方案三原则全部贯穿到实施：（1）<b>可插拔解析器</b>——<code>telemetry.frame.protocol</code> 选择帧格式，新增格式只需加一个解析器类并在配置切换；（2）<b>旁路截取</b>——服务只订阅透传接收流的 <code>rx</code> 方向，与数据页显示、录制完全解耦；（3）<b>mock 先行</b>——10Hz 模拟源按当前协议组假帧、走同一解析路径，无机器人也能演示与验收界面。</p>
+
+<h4>4.5.3 方案评审决策记录</h4>
+<p>原方案第 7 节列出 8 个待确认决策点，批复"按此方案实施"后的落定情况如下，其中 #1、#8 为对甲方仍开放事项：</p>
+<table>
+<tr><th>#</th><th>决策点</th><th>方案默认</th><th>落地情况</th></tr>
+<tr><td>1</td><td>遥测帧格式来源</td><td>占位 + mock 先行交付界面</td><td>已闭环——实机核对为 Wheeltec 底盘协议，按官方帧格式实现为默认解析器；binary/ascii 占位保留作备选</td></tr>
+<tr><td>2</td><td>速度字段回退数据源</td><td>帧缺失时回退运动解算值</td><td>调整——实施时删去跨服务回退，速度仅取遥测帧，缺失显示 <code>--</code>，保持服务间解耦</td></tr>
+<tr><td>3</td><td>电池电流槽位</td><td>保留（用户提及"电压电流"）</td><td>采纳——常显，机器人不上报时显示 <code>--</code></td></tr>
+<tr><td>4</td><td>运行状态枚举集合</td><td>待机/自动驾驶/遥控/急停 四态</td><td>采纳——映射表入 <code>status_map</code> 配置，码值可扩展</td></tr>
+<tr><td>5</td><td>曲线默认序列与窗口</td><td>电压 + 速度，滚动 60 秒</td><td>采纳——<code>curve.series/window_s</code> 可配，电流可按需加入</td></tr>
+<tr><td>6</td><td>低压告警阈值</td><td>22.0 V，边沿触发</td><td>采纳——"跳变才发"防刷屏，恢复自动解除；随电池组定稿调整</td></tr>
+<tr><td>7</td><td>遥测自动落盘</td><td>开启，CSV 滚动写 <code>data/</code></td><td>采纳——另提供状态栏"导出 CSV"手动复制当前窗口数据</td></tr>
+<tr><td>8</td><td>位置显示精度与坐标系</td><td>经纬度 6 位小数，坐标系未指定</td><td>采纳显示精度；<b>开放</b>——WGS-84/GCJ-02 待甲方确认后在解析层标定</td></tr>
+</table>
+
+<h3>4.6 机器人运动控制</h3>
+<p>批复需求为"视频页增加四个方向按键、松开即速度归零、最大速度放配置文件、要有加减速过程"。方案将其建模为 <b>vx（前后，m/s）/ vr（转向，rad/s，左转为正）双通道速度指令</b>：上/下键改 vx，左/右键改 vr。按住时目标速度取配置限幅的正负满值（<code>max_linear_speed</code> 默认 1.0 m/s、<code>max_angular_speed</code> 默认 0.5 rad/s），松开即目标归 0；实际速度对目标做斜坡趋近——加速用 accel 斜率（线速度 0.5、角速度 0.3），松开用 decel 斜率（线速度 0.8、角速度 0.5，减速快于加速更安全），到位吸附消除尾差。斜坡与限幅全部收在 <code>advance(dt)</code> 纯计算里，不碰 IO，无硬件可完整单测。</p>
+<figure class="mmd"><figcaption>图 4-5 运动控制：按住加速、松开滑停与周期重发</figcaption>
+<div class="mmd-toolbar"><span class="mmd-btns"></span></div>
+<div class="mmd-stage"><pre class="mermaid">
+flowchart LR
+  BTN["方向盘四键<br>按住 pressed / 松开 released"] --> SVC["MotionService<br>press / release"]
+  KEY["键盘 上/下/左/右<br>按下/释放对称过滤 isAutoRepeat"] --> SVC
+  TK["ticker 节拍<br>advance dt 纯计算"] --> SVC
+  SVC --> RAMP["vx / vr 斜坡<br>加速 accel 档 · 减速 decel 档"]
+  RAMP --> CL["限幅夹取<br>max_linear / max_angular"]
+  CL -- "非零：按 send_period_ms 周期重发" --> FRAME["组帧 frame_protocol<br>wheeltec 11 字节速度帧 / frame_hex 模板"]
+  CL -- "回零边沿：恰好补发一次停止帧" --> FRAME
+  FRAME --> PT["PassthroughService<br>kind=motion → RS485 透传"]
+  SVC -- "robot/motion 快照（合并语义）" --> PAD["方向盘高亮与读数回显"]
+  FO["失焦 / 切页 / 退出<br>stop_on_focus_loss"] -- "emergency_stop" --> SVC
+</pre></div>
+<div class="mmd-note">默认斜率下按住前进约 2.0 s 从 0 加速到 1.0 m/s（0.5 m/s²），松开约 1.25 s 滑停（0.8 m/s²）；机器人协议不同时仅需改 <code>motion.frame_protocol</code>（wheeltec / template）或 <code>frame_hex</code>。</div>
+</figure>
+<p>发送语义由服务内置的 ticker（节拍下限 50 ms）负责：速度非零期间按 <code>send_period_ms</code>（默认 100 ms）<b>周期重发</b>运动帧——按住时若某帧丢失，下一帧 100 ms 内必到，天然抗丢包；速度由非零回到 0 时<b>恰好补发一次</b>零速停止帧，此后空闲零发。组帧为双路：默认 <code>motion.frame_protocol=wheeltec</code>，按官方底盘下行速度帧组 11 字节帧——<code>0x7B</code> 帧头、2 字节预留、前向/横向速度（mm/s）与角速度（mrad/s）各填有符号 16 位大端（÷1000 还原），BCC 校验和与 <code>0x7D</code> 帧尾收口；逆时针（左转）为正，底盘反装时置 <code>motion.invert_angular=true</code> 翻转角速度符号；切 <code>template</code> 则回退 <code>motion.frame_hex</code> 模板组帧（占位符填速度×100 的有符号 16 位大端 hex）。帧经 <code>PassthroughService.send(frame, kind="motion")</code> 走 485 透传通道，与 AT 配置事务互不干扰；数据页"备注"列同步把下行速度帧译成语义句（如"速度指令：前向速度 0.500 m/s，角速度 0.100 rad/s"），上行反馈帧同列译"底盘反馈"文案。每次斜坡后服务把速度快照发布到合并主题 <code>robot/motion</code>，界面只读回显、不自行记账。</p>
+<p>界面侧 <code>ui/widgets/MotionPad</code> 以十字五格排布四个方向按钮与中心状态行，按钮设 <code>Qt.NoFocus</code> 避免抢页面焦点；视频页 <code>keyPressEvent</code> 与 <code>keyReleaseEvent</code> 把 ↑↓←→ 映射到同四个方向，并<b>对称过滤</b> <code>isAutoRepeat</code>：长按时系统会夹带重复的"按下/释放"事件对，两侧都只认非自动重复的那一次——按下只认首次、释放只认真正松手。早先只过滤了按下却漏掉释放，导致按住时中间的自动重复"释放"被当成松手、目标清零而速度"递增又回零"，现已修正；松开键与松开按钮语义一致。安全网四层：① 页面失焦或切离视频页触发急停（速度即时清零并补发停止帧，<code>stop_on_focus_loss</code> 默认开）；② "空发"守卫——并无运动时失焦不发帧，总线不多余；③ 会话 <code>stop()</code> 趁通道未关补发一次停止帧；④ 透传发送失败只在首次"跳变"时告警一次，节拍继续静默重试不刷屏。运动服务未装配或 <code>motion.enabled=false</code> 时，页面降级为方向盘停用并标注原因，视频其余功能不受影响。</p>
+
+<h3>4.7 界面层</h3>
+<p>主窗口从 pages 注册表按序创建六个页面，注册表以 key + 标题 + 说明 + 工厂函数声明页面，新增页面零改动主窗口。BasePage 定义统一契约：<code>on_batch(topic, items)</code> 接收桥的批量投递、<code>on_slot</code> 接收节拍回调、<code>say</code> 走状态栏、<code>on_close</code> 释放订约。六页要点：视频页帧到即绘、支持录制与抓图，底部常驻遥测状态栏（见 4.5），下区十字方向盘支持按钮与键盘四向运动控制（见 4.6）；控制台页 Hex/ASCII 互转、模板下发、CRC16 自动追加；数据页以九列表格展示对端透传数据流与参数视图，列宽可自由拖动、备注列对 Wheeltec 上下行帧做语义解读；电台配置页由注册表生成表单，支持读取/编辑/预览/下发四操作；信道监控页双轴 RSSI/EVM 历史曲线（按快照时间戳去重，1200 点环形上限）加链路指标卡加 STA 九列表；日志页三源合屏、来源与级别双维过滤、HTML 转义着色、4000 块硬截断、录制路径一键查看。</p>
+
+<h3>4.8 落盘与记录</h3>
+<p>RecordService 订阅总线并落盘：<code>data/logs/at_*.log</code>（AT 流水）、<code>data/logs/events_*.log</code>（事件）、<code>data/passthrough/bytes_*.log</code>（透传字节）、<code>data/passthrough/link_*.csv</code>（链路遥测表）、<code>data/recordings/</code>（录像）与 <code>data/snapshots/</code>（抓图）。paths() 汇总当前句柄供日志页展示，文件名以启动时间戳区分场次。机器人遥测表 <code>data/telemetry_日期.csv</code> 例外，由 TelemetryService 自带节拍冲刷（见 4.5），导出入口在视频页状态栏。</p>
+
+<h2>5 关键技术与难点</h2>
+
+<h3>5.1 RTSP 低延迟解码</h3>
+<p>默认使用摄像头子码流（704×576）以带宽优先；取流传输 <code>video.transport</code> 可选 TCP/UDP（见 5.7）。延迟控制分两级：收流侧 FFmpeg <code>max_delay = buffer_ms×1000</code>（代码默认 300 ms，现场建议 100 ms 起步）压缩协议层缓冲；放帧侧队列容量 <code>pacing_frames</code>（默认 5，现场 3）内按 <code>max_dwell_ms</code> 时间预算（默认 120 ms）做<b>时间基跳帧</b>——放帧停留超预算即丢弃积压、只放最新帧，队列溢出另计丢帧（<code>frames_dropped</code> 为溢出、<code>frames_skipped</code> 为跳帧，两本账分开）。OSD 右下角显示"显示N帧 · 停留Xms [跳帧M]"：若停留持续贴近预算上限且跳帧猛涨，说明解码跟不上流速率，应回调小 <code>buffer_ms</code> 或改走 UDP 取流。渲染侧按 <code>render_fps_limit=25</code> 限帧，保比例缩放与 OSD 叠加可选。</p>
+
+<h3>5.2 RSSI/EVM 曲线与阈值告警链</h3>
+<p>难点在合并型主题与历史曲线的配合：同一快照可能被多次投递，曲线在入点处按时间戳单调去重，保证"3 次重复投递只画 1 个点"；进页面时先用 radio 服务的历史缓存回填曲线，再增量接续；告警链从轮询判阈值发 AlarmEvent 起，经总线同时到状态灯与日志页，避免多处重复判断。</p>
+
+<h3>5.3 全链路 mock</h3>
+<p>仿真电台实现了 AT 命令语义应答（参数读写、组网状态）、RSSI 在 [-98,-52] 区间的 1 秒随机游走（因此会周期触发 -85/-92 告警，属预期演示效果）、STA 列表与丢包模拟；仿真视频源生成测试图样。自检与 CI 完全基于 mock 链路运行。</p>
+
+<h3>5.4 无硬件降级</h3>
+<p>所有页面在对应服务缺失或未连时仍可打开：按钮禁用并给原因提示、指标显示占位破折号、状态显示"未知"灰字。串口缺失时 AT 通道打开失败仅记 ERROR 日志不阻断界面启动。</p>
+
+<h3>5.5 机器人遥测：Wheeltec 协议接入与旁路容错</h3>
+<p>遥测解析器三选一：默认 <code>telemetry.frame.protocol=wheeltec</code>，按官方 24 字节上行反馈帧解析（<code>0x7B</code> 头 <code>0x7D</code> 尾、10 个 16 位大端字段按各自标度还原、BCC 校验，失配时跳一字节滑动重同步）；规划期的 binary 与 ascii 占位解析器保留作备选，换协议只需新增一个解析器并切配置，解析与展示链路不动。服务以"旁路"方式订阅透传原始流：匹配不到帧特征的字节原样放行，数据页透传功能零回归。显示节流（默认 2Hz）与 CSV 落盘（全量 1 秒节拍冲刷）刻意解耦——界面刷新频率低不影响留痕完整性；置灰与恢复两个边沿均绕过节流强制发布一次，保证状态切换即时可见。</p>
+
+<h3>5.6 运动控制：斜坡纯计算与"恰好一次"的安全收口</h3>
+<p>运动控制的难点全在异步事件下的安全边界，三个关键取舍：（1）斜坡写成纯函数 <code>advance(dt)</code>，限幅、到位吸附与补发判据都不触 IO，22 条服务层用例可在无硬件下把加速、滑行、斜向组合、周期重发的帧序列逐一断言；（2）停止帧在三个边沿各"恰好一次"——速度回零边沿、急停、会话退出前趁通道未关补发，空闲态由守卫拦住零帧外发，机器人不会收到悬空序列，也不会被无意义停止帧刷屏；（3）界面与服务共用单一状态源（服务快照经 <code>robot/motion</code> 回显），方向盘不自行记账，读数与实发速度天然一致，长按自动重复（isAutoRepeat）在 press 与 release 两侧<b>对称过滤</b>——按下只认首次、释放只认真正松手，杜绝"按住时速度递增又回零"与"松开丢事件导致持续运动"。测试还实证了两个 Qt 细节：便捷构造器 <code>QKeyEvent(type, key, modifiers, text, autorep, count)</code> 第 5 位是 autorep 而非重复计数，以及 <code>QPushButton</code> 无公开 <code>press()</code>——按钮链路测试直调信号槽等价且更稳。</p>
+
+<h3>5.7 RTSP 取流传输：TCP/UDP 运行时切换</h3>
+<p>TCP 取流稳定不花屏但重传缓冲抬高端到端延迟，UDP 延迟低但丢包可能花屏，故把 <code>video.transport</code> 做成可运行时切换的配置项：视频页工具条"传输"下拉即选即效并自动写回 <code>config/app.yaml</code>。实现要点四条：（1）配置层 <code>_validate</code> 对取值规范化，非法值一律回退默认 tcp；（2）一次切换"三处命中"——更新内存配置、取流中则以新传输重启拉流线程、持久化写回 yaml（写盘失败仅告警不影响内存生效，可传 persist=False 只切内存）；（3）UDP 分支自动把 PyAV socket <code>buffer_size</code> 提到 4 MB，防内核接收缓冲不足丢包；（4）出现花屏切回 TCP 即恢复，行为与配置始终一致。该开关使"低延迟试验"无需改文件重启进程。</p>
+
+<h2>6 测试与验证</h2>
+
+<h3>6.1 测试策略与环境</h3>
+<p>pytest + offscreen Qt 平台，不依赖任何硬件；UI 测试用 <code>build_session(None, mock=True)</code> 建会话、以 <code>UiBridge.interval_ms=200</code> 的桥手动触发节拍来模拟交付时序；lint 采用 ruff（行宽 100）。环境为 conda 环境 ewd611-hmi（Python 3.11）。</p>
+
+<h3>6.2 测试基线</h3>
+<table>
+<tr><th>层</th><th>测试文件</th><th>覆盖点</th></tr>
+<tr><td>协议</td><td>codec / client / registry / telemetry / telemetry_frames / templates / passthrough</td><td>编解码往返、超时重试、28 条规格校验、链路遥测解析、Wheeltec 上/下行帧编解码与备注语义化（binary/ascii 占位保留）、模板与 CRC</td></tr>
+<tr><td>传输</td><td>transport_mock</td><td>仿真传输分帧与应答</td></tr>
+<tr><td>服务与视频链</td><td>session / link / radio / passthrough / record / periodic / telemetry / motion / video，及 frame_pacing / video_url</td><td>装配生命周期、链路轮询、遥测节流/新鲜度/边沿告警/里程/CSV 落盘、运动斜坡限幅/周期重发/停止帧边沿/急停、视频服务传输切换与 URL 构造、放帧队列时间基跳帧与 dropped/skipped 分账</td></tr>
+<tr><td>界面</td><td>app / main_window / bridge / pages / base_page / theme / 六页各一 / motion_pad 与键盘挂接</td><td>装配、桥投递、页面构建/交互/降级、主题换算、视频页传输下拉与 OSD、数据页列宽与备注、方向盘按住松开/自动重复对称过滤（按住不回零）/失焦急停/双降级</td></tr>
+<tr><td>合计</td><td>32 个文件</td><td><b>565 条用例全部通过</b>，ruff 全仓无告警</td></tr>
+</table>
+
+<h3>6.3 GUI 冒烟与集成问题闭环</h3>
+<p>两类冒烟：真实配置启动（无串口环境）降级存活 12 秒验证；<code>gui --set app.mock=true</code> 验证仿真全链路。冒烟曾暴露一个集成缺陷——cmd_gui 未把 <code>--set</code> 覆盖透传给 run_app，导致命令行覆盖全部丢失；修复为 overrides 单一真源透传后，日志确认 <code>channel=mock mock=True link=True video=True record=True</code>，全仓回归保持通过（当前基线 565 条用例）。运动控制迭代与键盘长按修复后 GUI 冒烟（真实配置无串口降级启动）12 秒存活复验通过。</p>
+
+<h2>7 部署与使用概要</h2>
+<p>部署三步：conda 按 <code>environment.yml</code> 建环境（Python 3.11）→ <code>pip install -r requirements.txt</code>（7 项运行时依赖：pyserial、av、numpy、PyQt5、pyqtgraph、PyYAML、Pillow）→ <code>python run.py selfcheck</code> 通过后 <code>python run.py gui</code>。无网络环境可用项目内置 <code>.deps</code> 目录作 PYTHONPATH 兜底。详细步骤、配置说明与故障排查见配套《操作部署手册》。</p>
+
+<h2>8 结论与后续改进</h2>
+<p>软件按分层与消息驱动完成了全部功能需求（含后续迭代的界面字体、遥测状态栏、运动控制），565 条测试与双路径冒烟验证了正确性与降级健壮性；模块化结构使六个功能页、五种传输与 28 条参数各自可独立演进。后续改进方向：服务层集成测试进一步补齐；多摄像头与双端（AP/STA 角色互换）配置预设；告警声光提示与阈值在线编辑；以及把信道曲线历史导出为 CSV 供离线分析。</p>
+
+<div class="callout">本文档为单文件 HTML：目录可跳转、流程图可缩放并可查看 mermaid 源码；点击左栏"下载本页"可离线保存，"文档打包下载"获取两份文档合集。</div>
+</main>
+</div>
+
+<div class="modal" id="mmd-modal">
+  <div class="box">
+    <h3 id="mmd-modal-title">mermaid 源码</h3>
+    <textarea id="mmd-code" readonly></textarea>
+    <div class="row">
+      <button class="btn" onclick="copyMmd()">复制</button>
+      <button class="btn pri" onclick="closeMmd()">关闭</button>
+    </div>
+  </div>
+</div>
+<button class="btn pri" id="top-btn" onclick="scrollTo({top:0,behavior:'smooth'})">⬆ 返回顶部</button>
+
+<script>
+(function(){
+  var heads=[].slice.call(document.querySelectorAll('main h2, main h3, main h4'));
+  var toc=document.getElementById('toc-list');
+  heads.forEach(function(h,i){
+    if(!h.id) h.id='sec-'+(i+1);
+    var lv=parseInt(h.tagName.substring(1),10);
+    var li=document.createElement('li'); li.className='lv'+lv;
+    var a=document.createElement('a'); a.href='#'+h.id; a.textContent=h.textContent;
+    li.appendChild(a); toc.appendChild(li);
+  });
+  var links={};
+  [].slice.call(toc.querySelectorAll('a')).forEach(function(a){links[a.getAttribute('href').slice(1)]=a;});
+  var spy=new IntersectionObserver(function(es){
+    es.forEach(function(e){ if(e.isIntersecting){
+      [].slice.call(toc.querySelectorAll('a.active')).forEach(function(a){a.classList.remove('active');});
+      if(links[e.target.id]) links[e.target.id].classList.add('active');
+    }});
+  },{rootMargin:'-10% 0px -75% 0px'});
+  heads.forEach(function(h){spy.observe(h);});
+})();
+
+(function(){
+  var figs=[].slice.call(document.querySelectorAll('figure.mmd'));
+  figs.forEach(function(fig,i){
+    var pre=fig.querySelector('pre.mermaid');
+    if(!pre) return;
+    var src=pre.textContent.trim();
+    pre.setAttribute('data-src',src);
+    var bar=fig.querySelector('.mmd-btns');
+    var s=1;
+    function stage(){ return fig.querySelector('.mmd-stage'); }
+    function apply(){
+      var svg=stage().querySelector('svg');
+      if(!svg) return;
+      if(!svg.getAttribute('data-w')) svg.setAttribute('data-w',String(Math.max(svg.getBoundingClientRect().width,1)));
+      svg.style.maxWidth='none';
+      svg.style.width=Math.round(parseFloat(svg.getAttribute('data-w'))*s)+'px';
+    }
+    function mk(txt,fn,title){ var b=document.createElement('button'); b.textContent=txt; b.title=title||txt; b.onclick=fn; return b; }
+    if(bar){
+      bar.appendChild(mk('−',function(){s=Math.max(s/1.25,0.4);apply();},'缩小'));
+      bar.appendChild(mk('100%',function(){s=1;apply();},'重置'));
+      bar.appendChild(mk('＋',function(){s=Math.min(s*1.25,3);apply();},'放大'));
+      bar.appendChild(mk('获取 mermaid 源码',function(){showMmd(src, fig.querySelector('figcaption').textContent);},'查看并复制源码'));
+    }
+  });
+  var sc=document.createElement('script');
+  sc.src='https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js';
+  sc.onload=function(){
+    window.mermaid.initialize({startOnLoad:false,securityLevel:'loose',theme:'default',fontFamily:'Microsoft YaHei, SimHei, sans-serif'});
+    var pres=[].slice.call(document.querySelectorAll('pre.mermaid'));
+    pres.forEach(function(pre,i){
+      var srcTxt=pre.getAttribute('data-src')||pre.textContent;
+      window.mermaid.render('mmd-svg-'+i, srcTxt).then(function(r){
+        pre.innerHTML=r.svg;
+        var svg=pre.querySelector('svg');
+        if(svg){ svg.removeAttribute('style'); svg.style.maxWidth='100%'; svg.style.height='auto'; }
+      }).catch(function(){ /* 保留原文本 */ });
+    });
+  };
+  sc.onerror=function(){
+    [].slice.call(document.querySelectorAll('.mmd-note')).forEach(function(n){
+      n.textContent='（离线提醒：mermaid 库未能从 CDN 加载，图以源码文本显示；联网后刷新即可渲染。）'+n.textContent;
+      n.style.color='#b25a00';
+    });
+  };
+  document.head.appendChild(sc);
+})();
+
+function showMmd(src,cap){
+  document.getElementById('mmd-code').value=src;
+  document.getElementById('mmd-modal-title').textContent='mermaid 源码 · '+(cap||'');
+  document.getElementById('mmd-modal').classList.add('open');
+}
+function closeMmd(){ document.getElementById('mmd-modal').classList.remove('open'); }
+function copyMmd(){
+  var ta=document.getElementById('mmd-code'); ta.select();
+  try{ document.execCommand('copy'); }catch(e){}
+  if(navigator.clipboard){ navigator.clipboard.writeText(ta.value).catch(function(){}); }
+}
+document.getElementById('mmd-modal').addEventListener('click',function(e){ if(e.target===this) closeMmd(); });
+document.addEventListener('keydown',function(e){ if(e.key==='Escape') closeMmd(); });
+
+function downloadSelf(){
+  var html='<!DOCTYPE html>\n'+document.documentElement.outerHTML;
+  var b=new Blob([html],{type:'text/html;charset=utf-8'});
+  var a=document.createElement('a'); a.href=URL.createObjectURL(b);
+  a.download=document.title.split('·').pop().trim().replace(/\s+/g,'')+'.html';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(function(){URL.revokeObjectURL(a.href);},2000);
+}
+(function(){
+  var btn=document.getElementById('top-btn');
+  window.addEventListener('scroll',function(){ btn.style.display=window.scrollY>400?'block':'none'; });
+})();
+</script>
+</body>
+</html>

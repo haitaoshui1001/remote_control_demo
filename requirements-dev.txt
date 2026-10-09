@@ -1,0 +1,4 @@
+# 开发/验证依赖（在运行时依赖之上安装）
+-r requirements.txt
+pytest>=8.0
+ruff>=0.4.0

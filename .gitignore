@@ -1,0 +1,22 @@
+# 环境与依赖（由 requirements.txt / environment.yml 安装，不入库）
+.deps/
+.venv/
+
+# 运行时产物
+logs/
+data/
+debug.log
+.gui_smoke.log
+.protocol_dump.txt
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# 打包产物
+*.spec.bak
