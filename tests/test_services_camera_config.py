@@ -85,6 +85,19 @@ class FakeVideo:
             raise RuntimeError("取流重启炸了")
 
 
+_EXPAT_MSG = "No module named expat; use SimpleXMLTreeBuilder instead"
+
+
+class ExplodingClient(FakeClient):
+    """冻结包缺 XML 解析器的形态：ONVIF 调用抛非 OnvifError 的 ImportError。"""
+
+    def get_profiles(self) -> list[OnvifProfile]:
+        raise ImportError(_EXPAT_MSG)
+
+    def get_encoder_options(self, token: str) -> EncoderOptions:
+        raise ImportError(_EXPAT_MSG)
+
+
 def _service(
     monkeypatch, fake: FakeClient, *, video=None, cfg=None, bus=None
 ) -> CameraConfigService:
@@ -143,7 +156,25 @@ def test_load_profile_without_encoder_token(monkeypatch):
     assert not res.ok and "无视频编码引用" in res.error
 
 
+def test_load_captures_non_onvif_error(monkeypatch):
+    """ImportError 之类的非协议异常也要归一为 ok=False，不许抛穿。"""
+    svc = _service(monkeypatch, ExplodingClient())
+    res = svc.load(0)
+    assert not res.ok and res.action == "load" and res.stream_index == 0
+    assert "ImportError" in res.error and "expat" in res.error
+
+
 # ---------------------------------------------------------------- apply
+def test_apply_captures_non_onvif_error(monkeypatch):
+    fake = ExplodingClient()
+    video = FakeVideo()
+    svc = _service(monkeypatch, fake, video=video)
+    res = svc.apply(EncoderSettings(encoder_token="ENC0"))
+    assert not res.ok and res.action == "apply"
+    assert "ImportError" in res.error
+    assert video.restart_count == 0, "写入没成就不能重启取流"
+
+
 def test_apply_clamps_then_writes_and_restarts(monkeypatch):
     fake = FakeClient()
     video = FakeVideo()
@@ -193,6 +224,28 @@ def test_load_async_publishes_on_bus(monkeypatch):
     assert svc.load_async(0) is True
     assert done.wait(3.0), "工作线程应把结果发上总线"
     assert got[0].ok and got[0].action == "load"
+
+
+def test_action_crash_still_publishes(monkeypatch):
+    """工作线程里任何异常都必须回总线，否则界面永久停在"读取中"。"""
+    bus = EventBus()
+    got: list[CameraParams] = []
+    done = threading.Event()
+
+    def handler(topic, payload):
+        got.append(payload)
+        done.set()
+
+    def load(idx: int) -> CameraParams:
+        raise ImportError(_EXPAT_MSG)
+
+    bus.subscribe(Events.CAMERA_CFG, handler)
+    svc = _service(monkeypatch, FakeClient(), bus=bus)
+    monkeypatch.setattr(svc, "load", load)
+    assert svc.load_async(0) is True
+    assert done.wait(3.0), "炸了也得发结果"
+    assert not got[0].ok and got[0].action == "load"
+    assert "ImportError" in got[0].error
 
 
 def test_single_flight_busy(monkeypatch):

@@ -296,13 +296,19 @@ class LinkMonitor:
         cfg: LinkCfg | None = None,
         log: logging.Logger | None = None,
         history_len: int = 1200,
+        modules_provider: Any = None,
     ) -> None:
         self.at = at
         self.bus = bus or get_bus()
         self.cfg = cfg or LinkCfg()
         self.log = log or get_logger(f"hmi.protocol.link.{self.at.endpoint}")
+        #: 在线模块表提供者（``LinkService.at_modules``）。给了它，轮询才能在
+        #: "多台在线且未定向"时停手；不给（串口/仿真）则行为与从前一致。
+        self._modules_provider = modules_provider if callable(modules_provider) else None
         self._lock = threading.Lock()
         self._names: list[str] = []
+        self._ambiguity = ""
+        self._ambiguity_alarm_ts = 0.0
         #: 跨轮累积的"最近一次读到的结果"：首轮全量后只重读 volatile 项，
         #: 静态参数靠这里保留，避免快照每轮只剩易变字段。
         self._merged: dict[str, tuple[bool, Any, str]] = {}
@@ -357,6 +363,47 @@ class LinkMonitor:
         with self._lock:
             self._merged.clear()
             self._first_round_done = False
+            self._ambiguity = ""
+            self._ambiguity_alarm_ts = 0.0
+
+    def absorb(self, name: str, value: Any, *, ok: bool = True, err: str = "") -> bool:
+        """把一次 AT 读/写的新鲜结果回灌进跨轮累积。
+
+        轮询只在首轮读静态参数（TXPOWER、TX_MCS、ACKTMO 这些没标 volatile 的），
+        之后全靠 ``_merged`` 保留。用户在配置页手动重读或写入成功后如果不回灌，
+        1Hz 快照会立刻把表格"当前值"刷回首轮那个旧数字——实机表现就是"下发 8、
+        回读确认 8，表格里还是 1"。
+
+        只接受轮询清单里的键：清单外的参数进快照只会污染 ``build_snapshot``。
+        """
+        key = str(name).strip().upper()
+        with self._lock:
+            if key not in self._names:
+                return False
+            self._merged[key] = (bool(ok), value, str(err or ""))
+            return True
+
+    def _target_ambiguous(self) -> str:
+        """多台在线且未定向时返回说明文本，否则空串。
+
+        没有定向目标的广播查询会被多台模块同时应答：现场日志里 ``AT+TXPOWER?``
+        在 8dbm 与 1dbm 之间交替，两台的答案被混进同一份累积并永久保留。这种状态
+        下不轮询比乱轮询更有用——等 UI 选定一台，``select_device`` 会 reset 累积并
+        全量重读。
+        """
+        if self._modules_provider is None:
+            return ""
+        if getattr(self.at, "target_mac", b""):
+            return ""
+        try:
+            modules = list(self._modules_provider() or [])
+        except Exception:  # noqa: BLE001 模块表读不到时不阻断轮询
+            return ""
+        online = [m for m in modules if m.get("online")]
+        if len(online) < 2:
+            return ""
+        macs = "、".join(str(m.get("mac", "")) for m in online)
+        return f"{len(online)} 台模块在线且未定向（{macs}），已暂停遥测轮询"
 
     def _round_names(self) -> list[str]:
         """本轮实际要读的清单。
@@ -385,7 +432,37 @@ class LinkMonitor:
         """读一轮并返回快照；AT 通道被占用时跳过本轮（返回上一快照，不算失败）。
 
         首轮读全量清单；之后只读 volatile + 待补读项，静态参数从累积结果取值。
+
+        多台在线却没定向时直接跳过：这种轮询拿到的是"谁先应答算谁"的混合答案，
+        填进累积后会长期误导配置页。
         """
+        reason = self._target_ambiguous()
+        if reason:
+            self.skips += 1
+            with self._lock:
+                first = not self._ambiguity
+                self._ambiguity = reason
+                due = time.time() - self._ambiguity_alarm_ts >= 10.0
+                if due:
+                    self._ambiguity_alarm_ts = time.time()
+            if first:
+                self.log.warning("跳过遥测：%s", reason)
+            if due:
+                self.bus.publish(
+                    Events.ALARM,
+                    AlarmEvent(
+                        level=AlarmLevel.WARN.value,
+                        source=self.at.endpoint,
+                        code="AT_TARGET_AMBIGUOUS",
+                        message=f"{reason}，请在电台配置页选定目标模块",
+                    ),
+                )
+            return self._last
+        if self._ambiguity:
+            # 定向恢复：清掉"已告警"状态，下次再出现多台未定向要重新提示一次。
+            with self._lock:
+                self._ambiguity = ""
+                self._ambiguity_alarm_ts = 0.0
         if self.at.busy():
             self.skips += 1
             self.log.debug("AT 通道忙，跳过本轮遥测")

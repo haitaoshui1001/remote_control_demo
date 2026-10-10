@@ -63,6 +63,9 @@ class VideoPage(BasePage):
         self._dwell_ms = 0.0
         self._dwell_avg = 0.0
         self._camera_dialog: CameraConfigDialog | None = None
+        #: 已按下的方向键物理键码集合：组合键（前进+转向）逐键独立跟踪，
+        #: 长按去重看这个集合而不是看 isAutoRepeat 标志。
+        self._held_keys: set[int] = set()
 
         self.btn_source = QPushButton("启动视频")
         self.btn_snapshot = QPushButton("抓拍")
@@ -182,9 +185,11 @@ class VideoPage(BasePage):
     def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         direction = _MOTION_KEYMAP.get(event.key())
         if direction is not None:
-            # 长按的方向键会自动重复——按住一次就该是一次 press，
-            # 重复事件直接吞掉，否则松手后服务里还挂着没清的方向。
-            if not event.isAutoRepeat():
+            # 长按会自动重复"按下"——用 _held_keys 集合去重：该键已在集合里
+            # 说明已经 press 过，重复事件不再进服务；组合键（如 ↑+←）各键
+            # 独立入集合，两个方向同时生效。
+            if event.key() not in self._held_keys:
+                self._held_keys.add(event.key())
                 self._on_motion_press(direction)
             event.accept()
             return
@@ -195,9 +200,10 @@ class VideoPage(BasePage):
         if direction is not None:
             # 与 keyPressEvent 对称：系统长按会在两次重复"按下"之间塞进重复"释放"
             # （isAutoRepeat=True），这些中间释放绝不能当成松手，否则按住时目标
-            # 会被清零、速度"递增又回零"，而重复的"按下"又被上面吞掉再也回不来。
-            # 只有真正松手那一次（isAutoRepeat=False）才释放方向。
+            # 会被清零。只有真正松手那一次（isAutoRepeat=False）才释放方向、
+            # 出集合。
             if not event.isAutoRepeat():
+                self._held_keys.discard(event.key())
                 self._on_motion_release(direction)
             event.accept()
             return
@@ -387,6 +393,7 @@ class VideoPage(BasePage):
 
     def _motion_estop(self) -> None:
         """切页/失焦安全网：只在真在动（或还按着）时急停，避免空发停止帧。"""
+        self._held_keys.clear()
         motion = self.service("motion")
         if motion is None or not self.session.cfg.motion.stop_on_focus_loss:
             return

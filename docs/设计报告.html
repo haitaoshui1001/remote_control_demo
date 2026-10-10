@@ -79,7 +79,7 @@ figure.mmd figcaption{font-family:"SimHei","黑体",sans-serif;font-size:13.5px;
 <div class="layout">
 <aside id="toc">
   <div class="brand">EWD611 上位机 · 设计报告</div>
-  <div class="sub">v1.5 · 2026-10-07（机器人遥测/运动接入 Wheeltec 底盘协议、透传备注语义化；视频降延迟改造与 RTSP 取流 TCP/UDP 界面可切换；回归基线 565 条）· 点击目录可跳转</div>
+  <div class="sub">v1.6 · 2026-10-10（新增摄像头编码参数 ONVIF 远程配置；PyInstaller 免装环境 exe 打包交付；冻结包 XML 解析器故障复盘；回归基线 725 条）· 点击目录可跳转</div>
   <div class="btnrow">
     <button class="btn pri" onclick="downloadSelf()">⬇ 下载本页</button>
     <a class="btn" href="./EWD611上位机文档包.zip" download>🗜 文档打包下载</a>
@@ -91,7 +91,7 @@ figure.mmd figcaption{font-family:"SimHei","黑体",sans-serif;font-size:13.5px;
 <main class="main">
 <div class="doc-head">
   <h1>EWD611-868NW33 数传图传模块上位机控制软件<br>设计与实现报告</h1>
-  <div class="meta">项目代号：remote_demo ｜ 版本：v1.5 ｜ 日期：2026-10-07（含遥测状态栏、运动控制迭代；机器人上下行帧接入 Wheeltec 底盘协议并支持透传备注语义化；视频链路降延迟改造（收流窗口 + 放帧队列时间基跳帧）；RTSP 取流传输 TCP/UDP 界面可切换并自动写回配置；回归基线 565 条）｜ 配套文档：《操作部署手册》</div>
+  <div class="meta">项目代号：remote_demo ｜ 版本：v1.6 ｜ 日期：2026-10-10（在 v1.5 的遥测状态栏、运动控制、视频降延迟与取流切换之上，本版新增：摄像头分辨率/帧率/码率的 ONVIF 远程配置子系统（见 4.9）；PyInstaller onedir 免装环境 exe 打包交付路径（见 7）；冻结包内 XML 解析器缺失导致"摄像头参数读不到"的故障复盘（见 5.8）；回归基线 725 条）｜ 配套文档：《操作部署手册》</div>
 </div>
 
 <h2>1 项目概述</h2>
@@ -119,11 +119,13 @@ flowchart LR
 <table>
 <tr><th>用户需求</th><th>落地模块</th><th>交付状态</th></tr>
 <tr><td>显示图像</td><td><code>services/video.py</code> + 视频页</td><td>RTSP 子码流解码显示（TCP/UDP 可切换）、降延迟跳帧、录制、抓图，已交付</td></tr>
+<tr><td>远程配置摄像头的帧率、分辨率、码率</td><td><code>protocol/onvif.py</code> + <code>services/camera_config.py</code> + 视频页"摄像头参数"弹窗</td><td>标准库手写 ONVIF（WS-Security 摘要认证）读写编码配置，合法值域取设备自报 Options，写入后自动重启取流生效，已交付（见 4.9）</td></tr>
 <tr><td>485 透传控制指令</td><td><code>protocol/passthrough.py</code> + 控制台页 + 数据页</td><td>Hex/ASCII 双向透传、模板库、CRC16 自动追加，已交付</td></tr>
 <tr><td>配置图传模块参数并显示对端数据</td><td><code>protocol/param_registry.py</code> + <code>services/radio.py</code> + 电台配置页</td><td>28 条参数注册表、读取/编辑/预览/下发，已交付</td></tr>
 <tr><td>显示信道关键参数</td><td><code>services/link.py</code> + 信道监控页</td><td>RSSI/EVM 历史曲线、链路快照、STA 列表，已交付</td></tr>
 <tr><td>显示对端机器人遥测（状态/电压/速度/位置等）</td><td><code>protocol/telemetry_frames.py</code> + <code>services/telemetry.py</code> + 视频页遥测状态栏</td><td>Wheeltec 底盘反馈帧解析（占位帧保留备选）、边沿告警、迷你曲线与 CSV 导出，已交付</td></tr>
 <tr><td>AT 交互与运行日志</td><td><code>ui/pages/log_page.py</code></td><td>三源合屏日志、级别过滤、录制路径，已交付</td></tr>
+<tr><td>免装环境交付到其它笔记本</td><td><code>entry_gui.py</code> + <code>EWD611-HMI.spec</code>（PyInstaller）</td><td>onedir 无控制台 exe 目录包（约 111 MB）+ 启动自检日志 + 冒烟复验，已交付（见 7）</td></tr>
 </table>
 
 <h2>2 需求分析与设计原则</h2>
@@ -137,8 +139,9 @@ flowchart LR
 <tr><td>解耦合</td><td>层与层、服务与界面互不直连</td><td>事件总线发布订阅 + UI 桥单点投递，服务层零 PyQt5 依赖</td></tr>
 <tr><td>可靠性</td><td>无硬件/断线时界面可用并明确降级</td><td>全服务返回结构化结果不抛裸异常；页面降级态；自动重连</td></tr>
 <tr><td>实时性</td><td>视频低延迟、指令即时回显</td><td>解码线程 + 帧率上限丢帧；AT 超时 1500ms 可重试；总线合并投递</td></tr>
-<tr><td>可测试性</td><td>CI 可离线运行</td><td>mock 传输/电台/视频源；QT_QPA_PLATFORM=offscreen；565 条 pytest</td></tr>
+<tr><td>可测试性</td><td>CI 可离线运行</td><td>mock 传输/电台/视频源；QT_QPA_PLATFORM=offscreen；725 条 pytest</td></tr>
 <tr><td>可维护性</td><td>参数变更集中管理</td><td>参数注册表为唯一真源，表单/校验/编解码同源派生</td></tr>
+<tr><td>可交付性</td><td>目标机不装 Python 也能运行</td><td>PyInstaller onedir 冻结包（解释器 + 依赖 + 资源自包含），配置与数据目录外置可改，启动自检落日志（见 7）</td></tr>
 </table>
 
 <h3>2.3 设计原则</h3>
@@ -163,17 +166,20 @@ flowchart TB
     PT["PassthroughService"]
     RC["RecordService 落盘"]
     MO["MotionService 运动控制"]
+    CC["CameraConfigService 摄像头参数"]
   end
   subgraph P["协议层 hmi.protocol"]
     AC["AtClient / at_codec"]
     PR["param_registry 28 条"]
     TL["telemetry 遥测解析"]
     TP["passthrough + templates"]
+    OV["onvif 最小客户端"]
   end
   subgraph T["传输层 hmi.transport"]
     SR["串口 485 转 USB"]
     UD["UDP AT 通道"]
     RT["RTSP 拉流"]
+    HC["HTTP/SOAP 直连摄像头"]
     MK["mock 仿真"]
   end
   subgraph C["核心层 hmi.core"]
@@ -190,11 +196,14 @@ flowchart TB
   VD --> RT
   PT --> TP --> SR
   MO -- vx/vr 指令帧 --> PT
+  MW -- 摄像头参数弹窗 --> CC
+  CC -- ONVIF 读写 --> OV --> HC
+  CC -- 生效后重启取流 --> VD
   RC --> EB
   MK -. 仿真注入 .- LK
   MK -. 仿真注入 .- VD
 </pre></div>
-<div class="mmd-note">依赖方向自上而下单向；虚线为 mock 源在配置 app.mock=true 时替换真实传输。</div>
+<div class="mmd-note">依赖方向自上而下单向；虚线为 mock 源在配置 app.mock=true 时替换真实传输。摄像头参数走 HTTP/SOAP 直连摄像头网口，与 AT 指令的 485/UDP 通道互不占用。</div>
 </figure>
 
 <h3>3.2 模块清单</h3>
@@ -209,14 +218,15 @@ flowchart TB
 <tr><td><code>udp_at.py</code></td><td>UDP AT 通道与端口探测</td></tr>
 <tr><td><code>rtsp.py</code></td><td>PyAV 拉流解码出帧，TCP/UDP 取流与 socket 缓冲设置</td></tr>
 <tr><td><code>base.py</code></td><td>传输抽象接口</td></tr>
-<tr><td rowspan="7">protocol</td><td><code>at_codec.py</code></td><td>AT 行编解码、CRLF、OK/ERROR 判定、唤醒间隔</td></tr>
+<tr><td rowspan="8">protocol</td><td><code>at_codec.py</code></td><td>AT 行编解码、CRLF、OK/ERROR 判定、唤醒间隔</td></tr>
 <tr><td><code>at_client.py</code></td><td>请求-应答事务、超时重试、非 solicited 行捕获</td></tr>
 <tr><td><code>param_registry.py</code></td><td>28 条参数规格、校验、编码/解码、写入计划</td></tr>
 <tr><td><code>telemetry.py</code></td><td>AT 应答文本解析为链路快照字段</td></tr>
 <tr><td><code>telemetry_frames.py</code></td><td>机器人上下行帧编解码：Wheeltec 底盘协议（11 字节下行速度帧 / 24 字节上行反馈帧）、二进制与 ASCII 占位解析器、备注语义化、假帧生成</td></tr>
 <tr><td><code>passthrough.py</code></td><td>Hex/ASCII 帧封装、CRC16、回复配对</td></tr>
 <tr><td><code>templates.py</code></td><td>YAML 指令模板库与占位符</td></tr>
-<tr><td rowspan="8">services</td><td><code>session.py</code></td><td>build_session 统一装配、生命周期 start/stop</td></tr>
+<tr><td><code>onvif.py</code></td><td>标准库手写最小 ONVIF 客户端：WS-Security PasswordDigest 认证、GetProfiles / Get(Video)EncoderConfiguration(Options) / Set，XML 手工组包与命名空间无关查找，缺解析器也翻译成 OnvifError</td></tr>
+<tr><td rowspan="9">services</td><td><code>session.py</code></td><td>build_session 统一装配、生命周期 start/stop</td></tr>
 <tr><td><code>link.py</code></td><td>LinkMonitor 周期轮询、快照缓存、历史、告警发布</td></tr>
 <tr><td><code>radio.py</code></td><td>参数读写门面，全接口返回 dict 不抛异常</td></tr>
 <tr><td><code>video.py</code></td><td>拉流线程、帧率上限、放帧队列跳帧、OSD、录制联动、TCP/UDP 传输切换</td></tr>
@@ -224,12 +234,15 @@ flowchart TB
 <tr><td><code>record.py</code></td><td>AT 日志、事件日志、字节流、链路 CSV、录像与抓图</td></tr>
 <tr><td><code>telemetry.py</code></td><td>机器人遥测旁路解析、节流发布、新鲜度与边沿告警、里程与 CSV 落盘</td></tr>
 <tr><td><code>motion.py</code></td><td>方向运动控制：vx/vr 双通道斜坡、限幅、周期重发与停止帧补发</td></tr>
-<tr><td rowspan="5">ui</td><td><code>main_window.py</code></td><td>页签装配、状态栏、退出确认</td></tr>
+<tr><td><code>camera_config.py</code></td><td>摄像头编码参数读/写门面：工作线程执行 ONVIF、结果发布 <code>camera/config</code>、同一时刻只允许一个在途动作、任何异常都落成可读结果</td></tr>
+<tr><td rowspan="6">ui</td><td><code>main_window.py</code></td><td>页签装配、状态栏、退出确认</td></tr>
 <tr><td><code>bridge.py</code></td><td>UiBridge：总线的 Qt 侧批量投递器</td></tr>
 <tr><td><code>pages/*</code></td><td>BasePage 契约与六个功能页</td></tr>
 <tr><td><code>widgets/telemetry_bar.py</code></td><td>视频页底部遥测状态栏（数字格 + 迷你曲线 + 导出）</td></tr>
 <tr><td><code>widgets/motion_pad.py</code></td><td>视频页十字方向盘（四方向按钮 + 目标/当前速度读数 + 停用降级态）</td></tr>
+<tr><td><code>widgets/camera_dialog.py</code></td><td>视频页"摄像头参数"弹窗：码流档选择、当前值与值域联动下拉、读取/写入按钮态与结果回显</td></tr>
 <tr><td>mock / cli</td><td><code>radio.py</code> <code>video.py</code>；<code>cli/main.py</code></td><td>仿真电台与视频源；五个子命令与参数解析</td></tr>
+<tr><td>冻结包入口</td><td><code>entry_gui.py</code> + <code>EWD611-HMI.spec</code></td><td>exe 版唯一入口：切工作目录、<code>EWD611_HOME</code> 重定向、启动自检写 <code>logs/startup.log</code>、崩溃落 <code>crash.log</code>；spec 定义 onedir 打包与依赖收集纠偏（见 7）</td></tr>
 </table>
 
 <h3>3.3 事件总线与数据流</h3>
@@ -254,11 +267,12 @@ flowchart LR
 <tr><td><code>system/log</code></td><td>dict（ts/level/logger/text）</td><td>流 STREAM（仅 INFO 及以上）</td><td>日志页运行日志</td></tr>
 <tr><td><code>robot/telemetry</code></td><td>dict（sample/stale/age_s）</td><td>合并 COALESCED</td><td>视频页遥测状态栏</td></tr>
 <tr><td><code>robot/motion</code></td><td>dict（vx/vr/target/held/moving/sent_frames 快照）</td><td>合并 COALESCED</td><td>视频页方向盘回显（MotionPad）</td></tr>
+<tr><td><code>camera/config</code></td><td>CameraParams 数据类（ok/action/stream/current/options/error）</td><td>合并 COALESCED</td><td>视频页"摄像头参数"弹窗回显</td></tr>
 </table>
-<p>主题划分遵循两个判据：值只关心最新的（遥测快照、参数视图）用合并语义，避免 UI 被旧值刷屏；每条都必须留痕的（AT 事务、告警、日志）用流语义，整批交付不丢条。这一区别由 UiBridge 的投递策略保证，页面侧无需感知。</p>
+<p>主题划分遵循两个判据：值只关心最新的（遥测快照、参数视图）用合并语义，避免 UI 被旧值刷屏；每条都必须留痕的（AT 事务、告警、日志）用流语义，整批交付不丢条。这一区别由 UiBridge 的投递策略保证，页面侧无需感知。摄像头参数也归入合并语义：弹窗同一时刻只显示"最后一次读/写动作"的结果，网络慢时迟到的旧结果继续刷屏反而误导。</p>
 
 <h3>3.4 线程模型</h3>
-<p>共四类线程：（1）Qt 主线程，仅 UiBridge 的 QTimer 把总线数据投递给页面；（2）LinkMonitor 轮询线程，按 <code>link.poll_interval_s</code>（默认 3s）驱动 AT 读序列并发布快照；（3）串口/UDP 收发线程，负责按空闲间隔切帧；（4）RTSP 解码线程，出帧经帧率上限（默认 25fps）与迟到丢帧后送视频页。服务层与协议层完全不知道 Qt 的存在，全部跨线程交互收口在总线与桥两处，保证 offscreen 测试可以脱离界面直接驱动总线。</p>
+<p>共五类线程：（1）Qt 主线程，仅 UiBridge 的 QTimer 把总线数据投递给页面；（2）LinkMonitor 轮询线程，按 <code>link.poll_interval_s</code>（默认 3s）驱动 AT 读序列并发布快照；（3）串口/UDP 收发线程，负责按空闲间隔切帧；（4）RTSP 解码线程，出帧经帧率上限（默认 25fps）与迟到丢帧后送视频页；（5）camera-config 工作线程，由读/写动作按需拉起（非常驻），在空口桥上的秒级 SOAP 往返全部关在这条线程里，跑完即结束并把结果投回总线。服务层与协议层完全不知道 Qt 的存在，全部跨线程交互收口在总线与桥两处，保证 offscreen 测试可以脱离界面直接驱动总线。</p>
 
 <h3>3.5 关键设计决策</h3>
 <table>
@@ -268,6 +282,10 @@ flowchart LR
 <tr><td>AT 通道串口/UDP 可切换</td><td>现场 485 转 USB 可能占用，UDP 走本地模块网口可并行</td><td>两条通道行为差异 → 统一抽象到 transport 层接口下</td></tr>
 <tr><td>freq 类参数存原单位、编码时按 scale 换算</td><td>模块频点以 MHz×10 表达，界面直接显示 MHz</td><td>换算点遗漏风险 → 编解码只允许走 registry 的 encode/decode</td></tr>
 <tr><td>run.py 免打包入口而非 entry_points</td><td>现场部署是"拷目录 + 建环境"，免重装</td><td>不能 pip install 后全局命令 → 交付脚本 start_gui.bat 兜底</td></tr>
+<tr><td>ONVIF 用标准库手写最小客户端，不引 zeep/SDK</td><td>只需三读一写四个操作，装库会把 7 项运行时依赖膨胀数倍、冻结包体积与打包坑同比例上升；手写只依赖 <code>urllib</code> 与 <code>ElementTree</code></td><td>不覆盖完整规范 → 只实现用到的四个操作，命名空间采用"去前缀本地名"匹配，容错非标准实现</td></tr>
+<tr><td>合法值域只信设备自报 Options，写入前 <code>clamped()</code></td><td>不同固件支持的分辨率/帧率/码率档位差异大，界面写死列表必然出现"显示成功但设备拒收"</td><td>下拉项随读取结果动态生成 → 读失败时表单只读并给出原因，避免提交空值域</td></tr>
+<tr><td>跨空口的 ONVIF 调用放按需工作线程 + 单在途</td><td>请求穿 868MHz 桥可达秒级，同步执行会冻结整窗；并发两个 SOAP 会让设备返回错乱</td><td>需处理"忙"态与迟到结果 → 忙时拒绝新动作并置灰按钮，结果统一经 <code>camera/config</code> 合并投递</td></tr>
+<tr><td>源码与 exe 双入口分离（run.py / entry_gui.py）</td><td>开发态要能改配置、跑 pytest；交付态要自包含、免装环境、异常留痕</td><td>两个入口需各自维护 → 冻结入口只做"定位目录 + 自检 + 转调 run_app"，业务代码零分叉</td></tr>
 </table>
 
 <h2>4 子系统详细设计</h2>
@@ -416,10 +434,49 @@ flowchart LR
 <p>界面侧 <code>ui/widgets/MotionPad</code> 以十字五格排布四个方向按钮与中心状态行，按钮设 <code>Qt.NoFocus</code> 避免抢页面焦点；视频页 <code>keyPressEvent</code> 与 <code>keyReleaseEvent</code> 把 ↑↓←→ 映射到同四个方向，并<b>对称过滤</b> <code>isAutoRepeat</code>：长按时系统会夹带重复的"按下/释放"事件对，两侧都只认非自动重复的那一次——按下只认首次、释放只认真正松手。早先只过滤了按下却漏掉释放，导致按住时中间的自动重复"释放"被当成松手、目标清零而速度"递增又回零"，现已修正；松开键与松开按钮语义一致。安全网四层：① 页面失焦或切离视频页触发急停（速度即时清零并补发停止帧，<code>stop_on_focus_loss</code> 默认开）；② "空发"守卫——并无运动时失焦不发帧，总线不多余；③ 会话 <code>stop()</code> 趁通道未关补发一次停止帧；④ 透传发送失败只在首次"跳变"时告警一次，节拍继续静默重试不刷屏。运动服务未装配或 <code>motion.enabled=false</code> 时，页面降级为方向盘停用并标注原因，视频其余功能不受影响。</p>
 
 <h3>4.7 界面层</h3>
-<p>主窗口从 pages 注册表按序创建六个页面，注册表以 key + 标题 + 说明 + 工厂函数声明页面，新增页面零改动主窗口。BasePage 定义统一契约：<code>on_batch(topic, items)</code> 接收桥的批量投递、<code>on_slot</code> 接收节拍回调、<code>say</code> 走状态栏、<code>on_close</code> 释放订约。六页要点：视频页帧到即绘、支持录制与抓图，底部常驻遥测状态栏（见 4.5），下区十字方向盘支持按钮与键盘四向运动控制（见 4.6）；控制台页 Hex/ASCII 互转、模板下发、CRC16 自动追加；数据页以九列表格展示对端透传数据流与参数视图，列宽可自由拖动、备注列对 Wheeltec 上下行帧做语义解读；电台配置页由注册表生成表单，支持读取/编辑/预览/下发四操作；信道监控页双轴 RSSI/EVM 历史曲线（按快照时间戳去重，1200 点环形上限）加链路指标卡加 STA 九列表；日志页三源合屏、来源与级别双维过滤、HTML 转义着色、4000 块硬截断、录制路径一键查看。</p>
+<p>主窗口从 pages 注册表按序创建六个页面，注册表以 key + 标题 + 说明 + 工厂函数声明页面，新增页面零改动主窗口。BasePage 定义统一契约：<code>on_batch(topic, items)</code> 接收桥的批量投递、<code>on_slot</code> 接收节拍回调、<code>say</code> 走状态栏、<code>on_close</code> 释放订约。六页要点：视频页帧到即绘、支持录制与抓图，底部常驻遥测状态栏（见 4.5），下区十字方向盘支持按钮与键盘四向运动控制（见 4.6），工具条"摄像头参数…"打开非模态弹窗做 ONVIF 远程读写（见 4.9）；控制台页 Hex/ASCII 互转、模板下发、CRC16 自动追加；数据页以九列表格展示对端透传数据流与参数视图，列宽可自由拖动、备注列对 Wheeltec 上下行帧做语义解读；电台配置页由注册表生成表单，支持读取/编辑/预览/下发四操作；信道监控页双轴 RSSI/EVM 历史曲线（按快照时间戳去重，1200 点环形上限）加链路指标卡加 STA 九列表；日志页三源合屏、来源与级别双维过滤、HTML 转义着色、4000 块硬截断、录制路径一键查看。</p>
 
 <h3>4.8 落盘与记录</h3>
 <p>RecordService 订阅总线并落盘：<code>data/logs/at_*.log</code>（AT 流水）、<code>data/logs/events_*.log</code>（事件）、<code>data/passthrough/bytes_*.log</code>（透传字节）、<code>data/passthrough/link_*.csv</code>（链路遥测表）、<code>data/recordings/</code>（录像）与 <code>data/snapshots/</code>（抓图）。paths() 汇总当前句柄供日志页展示，文件名以启动时间戳区分场次。机器人遥测表 <code>data/telemetry_日期.csv</code> 例外，由 TelemetryService 自带节拍冲刷（见 4.5），导出入口在视频页状态栏。</p>
+
+<h3>4.9 摄像头编码参数远程配置（ONVIF）</h3>
+<p>增量需求为"远程配置摄像头的帧率、分辨率、码率"——目的是在不接触摄像头的前提下调整图传空口带宽占用。选型结论是用 <b>ONVIF 标准协议</b>：在用的网络摄像头（雄迈方案固件）开放 ONVIF Media1 服务，实测端口为 <code>8899</code>（并非规范默认的 80），因此 <code>video.onvif_port</code> 单独成键，与 RTSP 的 <code>video.rtsp_port</code>（554）分端口配置；账号口令复用 <code>video.user/password</code>。实现<b>不引入任何第三方 SOAP 库</b>，只用标准库 <code>urllib.request</code> 发 HTTP/SOAP、<code>xml.etree.ElementTree</code> 解析应答——客户端只覆盖四个必要动作，包体积与依赖风险都最小（决策依据见 3.5）。</p>
+<figure class="mmd"><figcaption>图 4-6 摄像头参数远程配置：读与写的完整链路</figcaption>
+<div class="mmd-toolbar"><span class="mmd-btns"></span></div>
+<div class="mmd-stage"><pre class="mermaid">
+sequenceDiagram
+    participant U as 用户
+    participant P as 视频页
+    participant D as 摄像头参数弹窗
+    participant S as CameraConfigService
+    participant W as camera-config 线程
+    participant C as OnvifClient
+    participant CAM as 摄像头 :8899
+    U->>P: 点【摄像头参数…】
+    P->>D: 打开非模态弹窗（初值取 video.stream_index）
+    U->>D: 选码流档（主=0 / 子=1）→ 点【读取】
+    D->>S: load_async(stream_index)
+    S->>W: 按需拉起工作线程（已有在途则返回忙）
+    W->>C: GetServices → GetProfiles
+    C->>CAM: POST SOAP + WS-Security PasswordDigest
+    CAM-->>C: Profile 列表与编码配置引用
+    W->>C: GetEncoderConfiguration + GetOptions
+    C->>CAM: POST SOAP（Media1）
+    CAM-->>W: current 与合法值域 options
+    W-->>D: 经总线 camera/config 回投 → 下拉按值域填充并解禁表单
+    U->>D: 改分辨率/帧率/目标码率 → 点【应用】
+    D->>S: apply_async(settings)
+    S->>W: 取 Options → clamped() 过滤越界值
+    W->>CAM: SetEncoderConfiguration
+    CAM-->>W: OK
+    W->>W: video.restart() 重启取流让新参数生效
+    W-->>D: 经总线回投 applied 与实际修正项 fixed
+</pre></div>
+<div class="mmd-note">请求穿 868MHz 空口桥，单次往返可达秒级，故读写一律放工作线程、界面只等总线；弹窗非模态，改参数时视频画面继续显示。</div>
+</figure>
+<p><b>值域永远来自设备</b>。读取一次拿到的是"当前值 + 该档支持的取值集合"（<code>EncoderOptions</code>：编码格式、每种格式下的分辨率清单、帧率档、码率范围），弹窗四个控件的候选项按此动态生成，切换编码格式会连带重算分辨率清单并尽量保留原选项；写入前再走一遍 <code>EncoderSettings.clamped(options)</code>，把越界的帧率/码率夹进合法范围，返回值里的 <code>fixed</code> 记录被修正了哪几项并直接显示给用户——界面回显的是"设备答应的值"，不是"用户填的值"，从根上消除"提示成功、重读又变回去"这类假象。<b>码率控制</b>一项刻意做成只回显不可改：实机走 Media1，写入报文里本就不区分恒定/可变码率，改它不会生效，与其让用户误以为改了，不如禁用并写明"码率高低由目标码率决定"。</p>
+<p><b>认证与服务发现都留了回退</b>。默认在 SOAP 头里带 WS-Security <code>PasswordDigest</code>（Nonce + Created + SHA1 摘要）；若设备回了 401 且挑战头是 <code>digest</code>，自动改用 HTTP Digest 重试一次，实际生效的方式记在 <code>auth_mode</code> 并随结果回显到界面。媒体服务地址先向 <code>GetServices</code> 询问，并从返回的多个 XAddr 里<b>挑中 Media1</b> 那个（实机同时报 media 与 media2，本客户端发的是 Media1 动作，挑错在严格固件上直接 Fault）；问不到则按常见路径 <code>/onvif/media_service</code> 猜。所有网络与协议层失败统一翻译成 <code>OnvifError</code>，再由服务落成 <code>CameraParams(ok=False, error=…)</code>——弹窗显示具体原因并把表单置回只读，不会留下"按钮点下去没反应"的空白态。</p>
+<p><b>并发与安全边界</b>：服务同一时刻只允许一个在途动作（<code>busy</code> 由线程存活判定），忙时按钮置灰显示"读取中…/写入中…"，杜绝并发 SOAP 让设备返回错乱；写入成功后调用 <code>video.restart()</code> 用同样的地址重新拉流，新参数当场可见，重启失败只记告警<b>不回滚</b>已写入的配置（设备侧已生效，回滚反而制造两边不一致）。服务不持有任何 Qt 对象，结果只经合并主题 <code>camera/config</code> 投递，因此协议层与服务层测试全部可以在 offscreen 下用假客户端驱动，覆盖读成功、值域过滤、设备 Fault、越界码流序号、异常必回总线等路径；界面侧只测"弹窗按结果填控件"这一层映射。</p>
 
 <h2>5 关键技术与难点</h2>
 
@@ -444,29 +501,79 @@ flowchart LR
 <h3>5.7 RTSP 取流传输：TCP/UDP 运行时切换</h3>
 <p>TCP 取流稳定不花屏但重传缓冲抬高端到端延迟，UDP 延迟低但丢包可能花屏，故把 <code>video.transport</code> 做成可运行时切换的配置项：视频页工具条"传输"下拉即选即效并自动写回 <code>config/app.yaml</code>。实现要点四条：（1）配置层 <code>_validate</code> 对取值规范化，非法值一律回退默认 tcp；（2）一次切换"三处命中"——更新内存配置、取流中则以新传输重启拉流线程、持久化写回 yaml（写盘失败仅告警不影响内存生效，可传 persist=False 只切内存）；（3）UDP 分支自动把 PyAV socket <code>buffer_size</code> 提到 4 MB，防内核接收缓冲不足丢包；（4）出现花屏切回 TCP 即恢复，行为与配置始终一致。该开关使"低延迟试验"无需改文件重启进程。</p>
 
+<h3>5.8 冻结包内 XML 解析器缺失：一次"读不到摄像头参数"的完整复盘</h3>
+<p>现象极具迷惑性：源码环境（<code>python run.py gui</code>）点"摄像头参数…→读取"正常返回，而打成 exe 的冻结包在同一台机器、同一根网线上<b>永远停在"读取中…"</b>，且 <code>logs/hmi.log</code> 里<b>一条 <code>hmi.camera</code> 记录都没有</b>——现象与"根本没点下去"完全一致，第一轮排查因此误入"端口/认证/空口延迟"方向并浪费了时间。真正的根因链如下。</p>
+<figure class="mmd"><figcaption>图 5-1 冻结包 XML 解析器缺失的因果链与三处修复落点</figcaption>
+<div class="mmd-toolbar"><span class="mmd-btns"></span></div>
+<div class="mmd-stage"><pre class="mermaid">
+flowchart TD
+  A["PyInstaller 依赖收集<br>收进 413976B 的 libexpat.dll"] --> B["本环境 pyexpat.pyd 为 73032B<br>需要的是 286536B 那份"]
+  B --> C["import xml.etree.ElementTree 成功<br>解析器是惰性加载的"]
+  C --> D["首次真正建树 ET.fromstring<br>抛 ImportError DLL load failed"]
+  D --> E["既不是 ParseError<br>也不是 OnvifError"]
+  E --> F["逃出 CameraConfigService.load()<br>的两道 except"]
+  F --> G["camera-config 工作线程静默死亡"]
+  G --> H["没有执行 publish<br>总线永无 camera/config"]
+  H --> I["弹窗永久 读取中<br>日志零 hmi.camera 行"]
+  A -. 修复一 .-> R1["spec 里后处理 binaries<br>剔除错 DLL 并注入同源份"]
+  E -. 修复二 .-> R2["协议层翻译成 OnvifError<br>服务层兜 Exception 且线程必回总线"]
+  C -. 修复三 .-> R3["入口自检真解析一次 XML<br>结果写进 startup.log"]
+</pre></div>
+<div class="mmd-note">三层修复各管一段：修一让故障不发生；修二保证即使发生也只是一条可读错误、界面不卡死；修三让下次同类问题在启动日志里当场暴露，不必再靠复现猜。</div>
+</figure>
+<p><b>根因是打包期的 DLL 装配错配，而非程序逻辑</b>。本项目的构建环境是 Conda，<code>pyexpat.pyd</code> 与它依赖的 <code>libexpat.dll</code> 必须来自同一次构建：本环境 <code>Library\bin\libexpat.dll</code> 为 286536 字节（与 73032 字节的 <code>pyexpat.pyd</code> 配套），而 PyInstaller 在扫描依赖时从别处收进来一份 413976 字节的同名 DLL 并放进了 <code>_internal</code>，加载时符号对不上，<code>pyexpat</code> 直接 DLL 加载失败。坑在于<b>失败时机被推迟</b>：标准库的 <code>ElementTree</code> 在 import 阶段完全不碰 expat，只有第一次建树才惰性加载解析器，所以"导入自检通过"毫无意义——必须在启动自检里真的 <code>ET.fromstring("&lt;a/&gt;")</code> 解析一次才算验到。修复方式是在 spec 里于 Analysis 之后<b>后处理 <code>a.binaries</code></b>：剔除所有自动收集的 <code>libexpat.dll</code>，再把构建解释器 <code>sys.prefix</code> 下同源的那一份以 <code>BINARY</code> 注入，并在构建日志打印实际选中的路径与尺寸供人工核对。</p>
+<div class="callout warn">教训（可直接复用的三条判据）：① <b>线程静默死亡 = 界面无限等待</b>。任何"按钮点下去既没成功也没失败"的现象，先怀疑后台线程里有异常没被接住——异步入口的收尾动作（publish 回总线）必须放在 <code>try/except</code> 之外保证必达，而不是只写在成功路径上。② <b>错误类型边界要闭合</b>。服务层按 <code>OnvifError</code> 处理是可接受的，但前提是协议层承诺"出门的异常只有这一种"；解析器缺失抛的是 <code>ImportError</code>，越出承诺就同时打死返回值和日志。现在协议层把 <code>ImportError</code> 翻译成 <code>OnvifError</code>，服务层再加一道 <code>except Exception</code> 兜底，双层收口。③ <b>打包问题要用冻结包内的证据判定</b>，不能靠源码环境推断：核对 <code>_internal</code> 内 DLL 尺寸、检查 <code>logs/startup.log</code> 的功能级探针结果，都比读代码猜测更快。</div>
+<p>自检探针的处置策略是<b>只记不拦</b>：expat 解析失败会在 <code>logs/startup.log</code> 写明 <code>xml expat parse: FAIL …（摄像头参数读取不可用）</code>，但<b>不</b>计入致命问题、不阻止程序启动。理由是本项目的主要功能——视频显示、485 透传与运动控制——完全不依赖 XML 解析，因为一个只影响摄像头远程配置的组件缺失而拒绝开机，会把可正常使用的功能一起赔进去；相比之下，"能开机 + 明确知道自己少了什么"对现场更友好。同类取舍在本项目还有两处：ONVIF 端口配错只影响参数读写不影响取流，机器人遥测解析失败只旁路计数不吞透传数据（见 5.5）。</p>
+<p>本次修复的验证是三段式的：构建日志出现 <code>[spec] libexpat.dll pinned to …\Library\bin\libexpat.dll</code>；核对冻结包 <code>_internal\libexpat.dll</code> 尺寸为 286536；在该包启动后的 <code>logs/startup.log</code> 读到 <code>xml expat parse: OK</code>。回归侧新增 4 条用例（协议层"解析器缺失必须翻译成 OnvifError"、服务层"读/写遇非协议异常必须落成结果"、"工作线程炸了也必须回总线"），保证这条静默路径不会随后续改动重新打开。</p>
+
 <h2>6 测试与验证</h2>
 
 <h3>6.1 测试策略与环境</h3>
-<p>pytest + offscreen Qt 平台，不依赖任何硬件；UI 测试用 <code>build_session(None, mock=True)</code> 建会话、以 <code>UiBridge.interval_ms=200</code> 的桥手动触发节拍来模拟交付时序；lint 采用 ruff（行宽 100）。环境为 conda 环境 ewd611-hmi（Python 3.11）。</p>
+<p>pytest + offscreen Qt 平台，不依赖任何硬件；UI 测试用 <code>build_session(None, mock=True)</code> 建会话、以 <code>UiBridge.interval_ms=200</code> 的桥手动触发节拍来模拟交付时序；lint 采用 ruff（行宽 100）。环境为 conda 环境 ewd611-hmi（Python 3.11）。ONVIF 链路的测试用假客户端替换 <code>CameraConfigService._client()</code>，不触网络即可断言读、写、值域过滤与异常回总线四条路径。</p>
+<p><b>解释器要分清</b>：跑 pytest 用仓库内 <code>.venv</code>（依赖齐全、含 pytest 与 ruff），打包构建用独立 Conda 解释器 + 外置依赖目录（见 7.2）。用错解释器最坏的表现是配置静默回落默认值（如 <code>onvif_port</code> 退回 80），会把排查带向完全错误的方向。</p>
 
 <h3>6.2 测试基线</h3>
 <table>
 <tr><th>层</th><th>测试文件</th><th>覆盖点</th></tr>
-<tr><td>协议</td><td>codec / client / registry / telemetry / telemetry_frames / templates / passthrough</td><td>编解码往返、超时重试、28 条规格校验、链路遥测解析、Wheeltec 上/下行帧编解码与备注语义化（binary/ascii 占位保留）、模板与 CRC</td></tr>
+<tr><td>协议</td><td>codec / client / registry / telemetry / telemetry_frames / templates / passthrough / onvif</td><td>编解码往返、超时重试、28 条规格校验、链路遥测解析、Wheeltec 上/下行帧编解码与备注语义化（binary/ascii 占位保留）、模板与 CRC；ONVIF 的 SOAP 组装与命名空间无关解析、Media1 服务地址挑选、WS-Security/Digest 认证分支、值域模型与 <code>clamped()</code>、Fault 与不可达的错误文案、解析器缺失翻译成 OnvifError</td></tr>
 <tr><td>传输</td><td>transport_mock</td><td>仿真传输分帧与应答</td></tr>
-<tr><td>服务与视频链</td><td>session / link / radio / passthrough / record / periodic / telemetry / motion / video，及 frame_pacing / video_url</td><td>装配生命周期、链路轮询、遥测节流/新鲜度/边沿告警/里程/CSV 落盘、运动斜坡限幅/周期重发/停止帧边沿/急停、视频服务传输切换与 URL 构造、放帧队列时间基跳帧与 dropped/skipped 分账</td></tr>
-<tr><td>界面</td><td>app / main_window / bridge / pages / base_page / theme / 六页各一 / motion_pad 与键盘挂接</td><td>装配、桥投递、页面构建/交互/降级、主题换算、视频页传输下拉与 OSD、数据页列宽与备注、方向盘按住松开/自动重复对称过滤（按住不回零）/失焦急停/双降级</td></tr>
-<tr><td>合计</td><td>32 个文件</td><td><b>565 条用例全部通过</b>，ruff 全仓无告警</td></tr>
+<tr><td>服务与视频链</td><td>session / link / radio / passthrough / record / periodic / telemetry / motion / video / camera_config，及 frame_pacing / video_url</td><td>装配生命周期、链路轮询、遥测节流/新鲜度/边沿告警/里程/CSV 落盘、运动斜坡限幅/周期重发/停止帧边沿/急停、视频服务传输切换与 URL 构造、放帧队列时间基跳帧与 dropped/skipped 分账；摄像头参数读/写成功与失败落成结果、越界码流序号、值域夹取后写入、成功后重启取流、失败不重启、单在途忙判、工作线程异常仍回总线</td></tr>
+<tr><td>界面</td><td>app / main_window / bridge / pages / base_page / theme / qt_api_usage / 六页各一 / motion_pad 与键盘挂接 / camera_dialog</td><td>装配、桥投递、页面构建/交互/降级、主题换算、视频页传输下拉与 OSD、数据页列宽与备注、方向盘按住松开/自动重复对称过滤（按住不回零）/失焦急停/双降级；摄像头弹窗按结果填控件、读取前只读、值域联动、忙态按钮与状态行文案</td></tr>
+<tr><td>合计</td><td>37 个文件</td><td><b>725 条用例全部通过</b>，ruff 全仓无告警</td></tr>
 </table>
 
 <h3>6.3 GUI 冒烟与集成问题闭环</h3>
-<p>两类冒烟：真实配置启动（无串口环境）降级存活 12 秒验证；<code>gui --set app.mock=true</code> 验证仿真全链路。冒烟曾暴露一个集成缺陷——cmd_gui 未把 <code>--set</code> 覆盖透传给 run_app，导致命令行覆盖全部丢失；修复为 overrides 单一真源透传后，日志确认 <code>channel=mock mock=True link=True video=True record=True</code>，全仓回归保持通过（当前基线 565 条用例）。运动控制迭代与键盘长按修复后 GUI 冒烟（真实配置无串口降级启动）12 秒存活复验通过。</p>
+<p>两类冒烟：真实配置启动（无串口环境）降级存活 12 秒验证；<code>gui --set app.mock=true</code> 验证仿真全链路。冒烟曾暴露一个集成缺陷——cmd_gui 未把 <code>--set</code> 覆盖透传给 run_app，导致命令行覆盖全部丢失；修复为 overrides 单一真源透传后，日志确认 <code>channel=mock mock=True link=True video=True record=True</code>，全仓回归保持通过（当前基线 725 条用例）。运动控制迭代与键盘长按修复后 GUI 冒烟（真实配置无串口降级启动）12 秒存活复验通过。冻结包（exe）另做一轮独立冒烟：构建后直接启动，核对 <code>logs/startup.log</code> 的功能级探针（含真解析一次 XML）与 <code>crash.log</code> 为空，再在包内改 <code>config/app.yaml</code> 复验 ONVIF 读参数与 485 透传；5.8 的两条静默失败路径已补 4 条用例（解析器缺失翻译成 <code>OnvifError</code>、工作线程异常仍回总线等）并纳入 725 条基线。</p>
 
-<h2>7 部署与使用概要</h2>
-<p>部署三步：conda 按 <code>environment.yml</code> 建环境（Python 3.11）→ <code>pip install -r requirements.txt</code>（7 项运行时依赖：pyserial、av、numpy、PyQt5、pyqtgraph、PyYAML、Pillow）→ <code>python run.py selfcheck</code> 通过后 <code>python run.py gui</code>。无网络环境可用项目内置 <code>.deps</code> 目录作 PYTHONPATH 兜底。详细步骤、配置说明与故障排查见配套《操作部署手册》。</p>
+<h2>7 部署与交付</h2>
+<h3>7.1 源码部署（conda 环境）</h3>
+<p>部署三步：conda 按 <code>environment.yml</code> 建环境（Python 3.11）→ <code>pip install -r requirements.txt</code>（7 项运行时依赖：pyserial、av、numpy、PyQt5、pyqtgraph、PyYAML、Pillow）→ <code>python run.py selfcheck</code> 通过后 <code>python run.py gui</code>。无网络环境可用项目内置 <code>.deps</code> 目录作 PYTHONPATH 兜底；开发期回归测试固定用仓库内 <code>.venv</code> 解释器（见 6.1）。详细步骤、配置说明与故障排查见配套《操作部署手册》。</p>
+
+<h3>7.2 免装环境 exe 打包交付</h3>
+<p>交付形态为 PyInstaller <b>onedir 冻结包</b>：一个目录自带解释器、依赖与资源，目标笔记本不装 Python，双击 <code>EWD611-HMI.exe</code> 即可运行，整目录压成 zip（约 111 MB）分发。<b>本节只记录流程、注意事项与踩坑清单</b>，spec 与构建脚本的参数细节以仓库内 <code>EWD611-HMI.spec</code>、<code>package.ps1</code> 为唯一真源，不在此重复。</p>
+<figure class="mmd"><figcaption>图 7-1 exe 打包交付流程与两道验收关卡</figcaption>
+<div class="mmd-toolbar"><span class="mmd-btns"></span></div>
+<div class="mmd-stage"><pre class="mermaid">
+flowchart LR
+  A["1 全量 pytest 通过<br>ruff 无告警"] --> B["2 package.ps1<br>构建开头同步源码"]
+  B --> C["3 PyInstaller onedir<br>windowed 无控制台"]
+  C --> D["4 核对构建日志<br>libexpat 选中路径与尺寸"]
+  D --> E["5 冒烟启动 exe"]
+  E --> F["6 查 _internal 内 DLL 尺寸<br>查 logs/startup.log 探针"]
+  F --> G["7 robocopy 或解包部署<br>到目标笔记本"]
+  G --> H["8 压 zip 交付<br>config 与 data 外置可改"]
+  D -. 装配不合格 .-> C
+  F -. 运行不合格 .-> A
+</pre></div>
+<div class="mmd-note">两个返工点分别对应"打包装配错"和"包内运行不对"，都必须回到流程起点重跑一次完整构建；手改产物目录里的文件不算交付物。</div>
+</figure>
+<p><b>流程</b>：① 先跑全量测试与 lint，保证进包源码是绿的；② 执行 <code>package.ps1</code> 做 Full 构建（约 100 秒）——脚本在<b>构建开头</b>把 <code>src</code>、<code>config</code> 与资源同步进构建目录，随后调 PyInstaller 按 spec 产出 onedir；③ 在构建日志里确认 libexpat 实际选中的路径与尺寸（原因见 5.8）；④ 在打包机直接启动 exe 冒烟，留约 25 秒让入口自检与各工作线程装配走完；⑤ 核对 <code>_internal\libexpat.dll</code> 的字节数与 <code>logs\startup.log</code> 出现 <code>xml expat parse: OK</code>，且 <code>crash.log</code> 为空；⑥ 用 <code>robocopy /MIR</code> 把整目录同步到目标机（或让对方解压 zip），接上 485 与网线即可用。</p>
+<p><b>注意事项</b>：（1）测试解释器与构建解释器<b>是两套</b>——回归用仓库 <code>.venv</code>，打包用独立 Conda 解释器加外置依赖目录，混用的典型症状是"测试全绿但包内缺依赖"。（2）<code>config</code>、<code>data</code>、<code>logs</code> 一律<b>外置在 exe 同级目录</b>、不进包体，运行时靠 <code>EWD611_HOME</code> 重定向定位，交付后现场可直接改参数而无需重新打包。（3）windowed 模式<b>没有控制台</b>，启动期异常只能落在 <code>logs\crash.log</code>，因此交付前必须确认它为空、并读一遍 <code>startup.log</code>。（4）spec 必须显式列出<b>隐式导入</b>（PyAV 的 <code>av.audio.frame</code> / <code>av.video.frame</code>、pyserial 的 <code>serial.tools.list_ports*</code>、<code>PIL.ImageQt</code>、六个页面模块）与<b>排除项</b>（pytest、ruff、tkinter 等），漏了会表现为"能启动，一进视频页或数据页就崩"。（5）UPX 压缩保持关闭。（6）源码有任何改动都要<b>重跑完整构建</b>：同步只发生在构建开头。</p>
+<div class="callout warn"><b>踩坑清单</b>：① <b>libexpat 与 pyexpat 错配</b>——PyInstaller 从别处收进同名 DLL，导致冻结包内读摄像头参数永久"读取中"且日志零记录，判据与三层修法见 5.8。② <b>自检改动没进包</b>——改完入口自检直接看产物以为生效，其实那次构建早已完成源码同步，重跑 Full 构建后 <code>startup.log</code> 才出现探针行。③ <b>解释器混用造成配置静默回落</b>——裸 Conda 解释器缺 PyYAML，<code>app.yaml</code> 读不进去而全部退回默认值，症状是"ONVIF 端口莫名变成 80、连不上摄像头"，属假线索；排查配置问题先确认用了哪个解释器、日志里实际读到的值是多少。④ <b>PowerShell 语法与退出码语义</b>——不支持 <code>&amp;&amp;</code> 串联命令，需用 <code>;</code>；<code>robocopy</code> 返回 0–7 都算成功，按"非 0 即失败"判定会把成功的部署误报为失败。</div>
 
 <h2>8 结论与后续改进</h2>
-<p>软件按分层与消息驱动完成了全部功能需求（含后续迭代的界面字体、遥测状态栏、运动控制），565 条测试与双路径冒烟验证了正确性与降级健壮性；模块化结构使六个功能页、五种传输与 28 条参数各自可独立演进。后续改进方向：服务层集成测试进一步补齐；多摄像头与双端（AP/STA 角色互换）配置预设；告警声光提示与阈值在线编辑；以及把信道曲线历史导出为 CSV 供离线分析。</p>
+<p>软件按分层与消息驱动完成了全部功能需求，并在计划外扩展了三块能力：机器人运动控制与限速（含键盘与方向盘双入口）、遥测状态栏与曲线（电压/电流/速度分账）、摄像头编码参数的 ONVIF 远程配置（见 4.9）；725 条测试与"源码 + 冻结包"双形态冒烟验证了正确性与降级健壮性；免装环境的 exe 交付（见 7.2）使同一套代码可以不经安装直接放到其它笔记本上跑。模块化结构使六个功能页、五种传输、28 条电台参数与摄像头参数各自可独立演进，打包层的三处纠偏也沉淀成了可复用的判据（见 5.8）。</p>
+<p>后续改进方向：服务层集成测试进一步补齐；多摄像头与双端（AP/STA 角色互换）配置预设；告警声光提示与阈值在线编辑；信道曲线历史导出 CSV 供离线分析；以及把打包流程脚本化为"构建 + 冒烟 + 校验"一键门禁，使 5.8 类装配回归在出包前就被拦住。</p>
 
 <div class="callout">本文档为单文件 HTML：目录可跳转、流程图可缩放并可查看 mermaid 源码；点击左栏"下载本页"可离线保存，"文档打包下载"获取两份文档合集。</div>
 </main>

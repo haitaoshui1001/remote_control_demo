@@ -128,6 +128,27 @@ def test_keyboard_diagonal_combo(page):
     assert st["held"] == ["right", "up"]
     assert st["target_vx"] == pytest.approx(1.0)
     assert st["target_vr"] == pytest.approx(-0.5)
+    # 两通道同时给满：按下即满速，组合就是"前进+转向"同时生效
+    motion.advance(0.1)
+    st = motion.snapshot()
+    assert st["vx"] == pytest.approx(1.0)
+    assert st["vr"] == pytest.approx(-0.5)
+
+
+def test_keyboard_combo_survives_mislabeled_autorepeat(page):
+    """第二个键的首次按下若被系统标成 autoRepeat，也必须正常生效（组合键回归）。"""
+    motion = page.service("motion")
+    page.keyPressEvent(_key(QEvent.KeyPress, Qt.Key_Up))
+    page.keyPressEvent(_key(QEvent.KeyPress, Qt.Key_Left, autorep=True))
+    st = motion.snapshot()
+    assert st["held"] == ["left", "up"], "被误标 repeat 的转向键不该被当成重复而丢掉"
+    assert st["target_vx"] == pytest.approx(1.0)
+    assert st["target_vr"] == pytest.approx(0.5)
+
+    # 松开转向键：前进方向不受影响
+    page.keyReleaseEvent(_key(QEvent.KeyRelease, Qt.Key_Left))
+    assert motion.snapshot()["held"] == ["up"]
+    assert motion.snapshot()["target_vr"] == pytest.approx(0.0)
 
 
 def test_motion_state_via_bridge_refreshes_readout(page, session):
@@ -171,14 +192,14 @@ def test_on_hide_estops_when_moving(qapp, session):
         motion.press("up")
         motion.advance(0.1)
         st = motion.snapshot()
-        assert st["vx"] == pytest.approx(0.05)
+        assert st["vx"] == pytest.approx(1.0), "不加减速：一拍直接满速"
         sent0 = st["sent_frames"]
 
         page.on_hide()
         st = motion.snapshot()
         assert st["held"] == []
         assert st["vx"] == pytest.approx(0.0)
-        assert st["sent_frames"] > sent0, "滑行中的急停必须补发停止帧"
+        assert st["sent_frames"] > sent0, "满速中的急停必须补发停止帧"
     finally:
         bridge.stop()
         session.stop()

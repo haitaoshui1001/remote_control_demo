@@ -1,9 +1,9 @@
-"""运动控制服务单元测试：斜坡、限幅、周期发帧、停止边沿与发布去重。
+"""运动控制服务单元测试：直通限速、限幅、周期发帧、停止边沿与发布去重。
 
 时间一律显式喂给 ``advance(dt)``，不 sleep、不起节拍线程（生命周期用例除外）——
 把"算得对不对"和"调度准不准"分开验。发帧只盯注入的假透传门面，断言的就是
 帧字节序列本身；空闲零占用和"失败只报一次"是方案里两条最容易被悄悄破坏的
-承诺，各留一条用例钉住。
+承诺，各留一条用例钉住。运动不加减速：一拍到位，前后与转向可组合叠加。
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ def test_press_sets_full_speed_target():
     st = svc.snapshot()
     assert st["held"] == ["up"]
     assert st["target_vx"] == pytest.approx(1.0)
-    assert st["vx"] == 0.0, "press 只改目标，当前速度要等斜坡"
+    assert st["vx"] == 0.0, "press 只改目标，当前速度下一拍直通到位"
 
 
 def test_release_clears_target_keeps_current():
@@ -75,7 +75,7 @@ def test_release_clears_target_keeps_current():
     svc.release("up")
     st = svc.snapshot()
     assert st["target_vx"] == 0.0
-    assert st["vx"] == pytest.approx(0.1), "松开瞬间当前值不变，滑停交给后续拍"
+    assert st["vx"] == pytest.approx(1.0), "松开瞬间当前值不变，下一拍归零并补停止帧"
 
 
 def test_opposite_keys_cancel_out():
@@ -91,12 +91,15 @@ def test_opposite_keys_cancel_out():
 
 
 def test_diagonal_combines_linear_and_angular():
-    svc = _svc(FakePT())
+    pt = FakePT()
+    svc = _svc(pt)
     svc.press("up")
     svc.press("left")
     st = svc.snapshot()
     assert st["target_vx"] == pytest.approx(1.0)
     assert st["target_vr"] == pytest.approx(0.5)
+    svc.advance(0.1)
+    assert _hexes(pt.calls) == ["7B000003E8000001F4657D"], "前进+转向叠加进同一帧同时下发"
 
 
 def test_press_directions_are_the_documented_four():
@@ -122,47 +125,37 @@ def test_set_target_clamps_to_configured_limits():
     assert st["target_vr"] == pytest.approx(-0.5)
 
 
-# ------------------------------------------------------------------ 斜坡与发帧
-def test_accel_ramp_climbs_and_snaps_at_max():
+# ------------------------------------------------------------------ 直通与发帧
+def test_speed_snaps_to_target_in_one_tick():
     pt = FakePT()
     svc = _svc(pt)
     svc.press("up")
-    for _ in range(10):
-        svc.advance(0.1)
-    assert svc.snapshot()["vx"] == pytest.approx(0.5)
-    for _ in range(10):
-        svc.advance(0.1)
+    svc.advance(0.1)
+    assert svc.snapshot()["vx"] == pytest.approx(1.0), "不加减速：一拍直接到满速"
+
+
+def test_release_snaps_to_zero_next_tick():
+    pt = FakePT()
+    svc = _svc(pt)
+    svc.press("up")
+    svc.advance(0.1)
     assert svc.snapshot()["vx"] == pytest.approx(1.0)
-    svc.advance(0.5)
-    assert svc.snapshot()["vx"] == 1.0, "到位吸附，不越过上限"
-
-
-def test_decel_is_steeper_than_accel_on_release():
-    pt = FakePT()
-    svc = _svc(pt)
-    svc.press("up")
-    svc.advance(1.0)
-    assert svc.snapshot()["vx"] == pytest.approx(0.5)
     svc.release("up")
     svc.advance(0.1)
-    assert svc.snapshot()["vx"] == pytest.approx(0.42), "减速 0.8/s：一拍掉 0.08"
+    assert svc.snapshot()["vx"] == 0.0, "松手下一拍直接归零"
 
 
-def test_frame_sequence_ramp_down_and_single_stop_frame():
+def test_frame_sequence_snap_and_single_stop_frame():
     pt = FakePT()
     svc = _svc(pt)
     svc.press("up")
     svc.advance(0.1)
     svc.advance(0.1)
-    svc.advance(0.1)
     svc.release("up")
-    svc.advance(0.1)
     svc.advance(0.1)
     assert _hexes(pt.calls) == [
-        "7B0000003200000000497D",
-        "7B00000064000000001F7D",
-        "7B0000009600000000ED7D",
-        "7B00000046000000003D7D",
+        "7B000003E800000000907D",
+        "7B000003E800000000907D",
         "7B00000000000000007B7D",
     ], "活动期每拍一发，落到零只补一帧停止"
     n = len(pt.calls)
@@ -176,7 +169,7 @@ def test_angular_frame_carries_vr_slot():
     svc = _svc(pt)
     svc.press("left")
     svc.advance(0.1)
-    assert _hexes(pt.calls) == ["7B000000000000001E657D"], "左转 0.3/s 一拍 0.03→Z 槽 001E"
+    assert _hexes(pt.calls) == ["7B00000000000001F48E7D"], "左转满速 0.5 rad/s→Z 槽 01F4"
 
 
 def test_idle_ticks_send_nothing():
@@ -200,7 +193,7 @@ def test_emergency_stop_zeroes_immediately_and_sends_stop_frame():
     assert pt.calls[-1] == bytes.fromhex("7B00000000000000007B7D")
     n = len(pt.calls)
     svc.advance(0.1)
-    assert len(pt.calls) == n, "急停后不走斜坡补发"
+    assert len(pt.calls) == n, "急停后空闲不再发帧"
 
 
 def test_invert_angular_flips_z_slot():
@@ -208,7 +201,7 @@ def test_invert_angular_flips_z_slot():
     svc = _svc(pt, **{"motion.invert_angular": "true"})
     svc.press("left")
     svc.advance(0.1)
-    assert _hexes(pt.calls) == ["7B000000000000FFE2667D"], "翻转后 0.03→-0.03→FFE2"
+    assert _hexes(pt.calls) == ["7B000000000000FE0C897D"], "翻转后 +0.5→-0.5→FE0C"
 
 
 def test_custom_frame_template_is_rendered():
@@ -216,7 +209,7 @@ def test_custom_frame_template_is_rendered():
     svc = _svc(pt, **{"motion.frame_protocol": "template", "motion.frame_hex": "BB CC {vx} {vr}"})
     svc.press("up")
     svc.advance(0.1)
-    assert _hexes(pt.calls) == ["BBCC00050000"]
+    assert _hexes(pt.calls) == ["BBCC00640000"], "满速 1.0 → ×100 = 0064"
 
 
 # ------------------------------------------------------------------ 开关与异常收口
@@ -263,7 +256,7 @@ def test_publish_events_dedup_on_identical_state():
     assert len(seen) == 2, "当前值变了要发"
     svc.release("up")
     svc.advance(1.0)
-    assert len(seen) == 4, "松开一拍 + 落零补发各一条"
+    assert len(seen) == 4, "松开一拍 + 归零各发一条"
     for _ in range(5):
         svc.advance(0.1)
     assert len(seen) == 4, "停稳后的空闲拍全部去重"
@@ -297,14 +290,12 @@ def test_validate_clamps_nonsense_motion_values():
         **{
             "motion.max_linear_speed": "0",
             "motion.max_angular_speed": "-1",
-            "motion.linear_accel": "0",
             "motion.send_period_ms": "10",
         }
     )
     _validate(cfg)
     assert cfg.motion.max_linear_speed == pytest.approx(1.0)
     assert cfg.motion.max_angular_speed == pytest.approx(0.5)
-    assert cfg.motion.linear_accel == pytest.approx(0.5)
     assert cfg.motion.send_period_ms == 50
     assert any("运动" in w for w in cfg.meta.warnings)
 
@@ -315,9 +306,9 @@ def test_wheeltec_tx_note_shows_speeds():
     svc = _svc(pt)
     svc.press("up")
     svc.advance(0.2)
-    assert pt.calls, "按住斜坡期必须发帧"
+    assert pt.calls, "按住期间必须每拍发帧"
     assert "速度指令" in pt.notes[-1]
-    assert "前向速度 0.100 m/s" in pt.notes[-1]
+    assert "前向速度 1.000 m/s" in pt.notes[-1]
     assert "角速度 0.000 rad/s" in pt.notes[-1]
 
 

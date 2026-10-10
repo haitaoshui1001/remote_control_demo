@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from typing import Any, NamedTuple
 
@@ -543,3 +544,117 @@ def test_query_still_works_when_transport_lacks_supports_target(
     h.client.set_target_mac("96-a1-3e-7d-83-88")
     ok, value, _raw = h.client.query_value("MODE")
     assert (ok, value) == (True, "ap")
+
+
+# ---------------------------------------------------------------- 排队/计时（现场卡死放大器）
+def _silent_client(timeout_ms: int = 120, retries: int = 0) -> tuple[AtClient, ChannelDemux, SilentTransport]:
+    transport = SilentTransport()
+    demux = ChannelDemux("queue-test", idle_gap_ms=20.0, read_timeout_ms=5)
+    demux.attach(transport)
+    client = AtClient(
+        AtCfg(timeout_ms=timeout_ms, retries=retries, pre_silence_ms=0, wake_sequence=""),
+        demux,
+        value_grace_ms=_GRACE_MS,
+    )
+    return client, demux, transport
+
+
+def _hold_lock(client: AtClient, seconds: float) -> threading.Thread:
+    """在另一条线程上占住 AT 锁，模拟"前面的对话正堵着通道"。"""
+    box: list[str] = []
+
+    def _run() -> None:
+        if not client._lock.acquire(timeout=5.0):
+            box.append("acquire failed")
+            return
+        time.sleep(seconds)
+        client._lock.release()
+
+    th = threading.Thread(target=_run)
+    th.start()
+    time.sleep(0.05)  # 让持锁线程真的把锁拿到手
+    return th
+
+
+def test_request_that_queued_past_its_budget_is_dropped_unsent() -> None:
+    """排队排到超时预算耗尽，这条指令就该丢弃而不是照发。
+
+    现场最怕的是"用户早放弃的那条 SET 突然打到另一台模块上"，
+    所以这里钉死：传输层一笔都没收到，且失败原因写清楚是没发送。
+    """
+    client, demux, transport = _silent_client(timeout_ms=120)
+    errors: list[str] = []
+    try:
+        holder = _hold_lock(client, 0.30)
+
+        def _send() -> None:
+            try:
+                client.request("AT+POWER=8", name="TXPOWER", kind="set", timeout_ms=120)
+            except AtError as exc:
+                errors.append(str(exc))
+
+        sender = threading.Thread(target=_send)
+        sender.start()
+        sender.join(5.0)
+        holder.join(5.0)
+
+        assert errors, "排队耗尽预算必须报错，不能静默吞掉"
+        assert "本次未发送" in errors[0]
+        assert transport.writes == []
+        st = client.stats()
+        assert st["sent"] == 0
+        assert st["error"] == 1
+    finally:
+        demux.stop()
+
+
+def test_rtt_excludes_the_time_spent_waiting_for_the_lock() -> None:
+    """rtt 只算拿到锁之后的耗时——等锁是自家线程堵的，不是模块慢。"""
+    h = _harness(MockRadioModule(name="local", seed=11))
+    try:
+        holder = _hold_lock(h.client, 0.25)
+        t0 = time.perf_counter()
+        ex = h.client.query("MODE")
+        wall_ms = (time.perf_counter() - t0) * 1000.0
+        holder.join(5.0)
+
+        assert ex.ok is True
+        assert wall_ms - ex.rtt_ms > 100.0, (
+            f"墙钟 {wall_ms:.0f}ms 含排队，rtt 只该 {ex.rtt_ms:.0f}ms"
+        )
+    finally:
+        _teardown(h)
+
+
+def test_channel_closed_error_is_not_retried() -> None:
+    """通道没打开属于"未上线"，重发只会把 AT 锁占满、让界面彻底卡死。"""
+
+    class _Closed(SilentTransport):
+        def is_open(self) -> bool:
+            return False
+
+    transport = _Closed()
+    demux = ChannelDemux("closed-test", idle_gap_ms=20.0, read_timeout_ms=5)
+    demux.attach(transport)
+    bus = EventBus()
+    events: list[AtExchange] = []
+    bus.subscribe(Events.AT_EXCHANGE, lambda topic, payload: events.append(payload))
+    client = AtClient(
+        AtCfg(timeout_ms=80, retries=1, pre_silence_ms=0, wake_sequence=""),
+        demux,
+        bus=bus,
+        value_grace_ms=_GRACE_MS,
+    )
+    try:
+        with pytest.raises(AtError, match="未打开"):
+            client.request("AT+MODE=?", name="MODE", kind="query")
+        assert transport.writes == []
+        assert client.stats()["retry"] == 0
+        assert len(events) == 1
+    finally:
+        demux.stop()
+
+
+def test_default_retries_is_one() -> None:
+    """默认只重试 1 次：超时类失败最坏 1500ms×2，不能再堵住整条 AT 链路。"""
+    assert AtCfg().retries == 1

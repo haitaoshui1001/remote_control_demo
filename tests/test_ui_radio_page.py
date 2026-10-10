@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 from PyQt5.QtGui import QPainter, QPixmap
 from PyQt5.QtTest import QTest
-from PyQt5.QtWidgets import QComboBox, QLineEdit, QStyle, QStyleOptionViewItem
+from PyQt5.QtWidgets import QComboBox, QLineEdit, QPushButton, QStyle, QStyleOptionViewItem
 
 from hmi.core.events import Events
 from hmi.services.session import build_session
@@ -160,27 +160,81 @@ def test_apply_uses_write_and_updates_current(page, session, monkeypatch):
     assert "OK" in page.preview_view.toPlainText()
 
 
-def test_apply_uses_action_for_wo_rows(page, session, monkeypatch):
-    actions: list[tuple[str, str]] = []
-    writes: list[str] = []
+def test_action_row_excluded_from_batch_apply(page, session, monkeypatch):
+    """动作行即使填了新值也不进"下发修改"：只给普通参数下发，并提示逐行执行。"""
+    calls: list = []
+    monkeypatch.setattr(page, "say", lambda text, *a, **k: calls.append(text))
+    monkeypatch.setattr(
+        session.radio,
+        "action",
+        lambda *a, **k: (calls.append("action"), {"ok": True})[1],
+    )
+    monkeypatch.setattr(
+        session.radio, "write", lambda n, v: (calls.append(("write", n)), {"ok": True})[1]
+    )
+    field = page._editors["PAIR"]
+    if isinstance(field, QComboBox):
+        field.setCurrentIndex(1)
+    else:
+        field.setText("1")
+    page.table.cellWidget(page._row_of["TXPOWER"], _C_EDIT).setText("12")
+    page.btn_apply.click()
+    assert calls.count("action") == 0, "批量下发绝不能执行动作指令"
+    assert ("write", "PAIR") not in calls
+    assert ("write", "TXPOWER") in calls
+    assert any("执行" in str(c) for c in calls)
+
+
+def test_dangerous_action_asks_confirmation_before_send(page, session, monkeypatch):
+    """LOADDEF 标了 confirm：确认框取消就不下发，确认后才带 confirmed=True 走 action()。"""
+    from PyQt5.QtWidgets import QMessageBox
+
+    from hmi.ui.pages import radio_page as rp
+
+    asked: list[str] = []
+    executed: list[tuple] = []
     monkeypatch.setattr(page, "say", lambda *a, **k: None)
 
-    def fake_action(name, value=""):
-        actions.append((name, value))
-        return {"ok": True}
+    def fake_action(name, value="", *, confirmed=False):
+        executed.append((name, value, confirmed))
+        return {"ok": True, "detail": "OK"}
 
     monkeypatch.setattr(session.radio, "action", fake_action)
-    monkeypatch.setattr(session.radio, "write", lambda n, v: writes.append(n) or {"ok": True})
-    editor = page.table.cellWidget(page._row_of["PAIR"], _C_EDIT)
-    if isinstance(editor, QComboBox):
-        editor.setCurrentIndex(1)
-        value = editor.currentText()
+    monkeypatch.setattr(
+        rp.QMessageBox,
+        "question",
+        lambda *a, **k: asked.append(a[2]) or QMessageBox.No,
+    )
+    box = page.table.cellWidget(page._row_of["LOADDEF"], _C_EDIT)
+    btn = box.findChild(QPushButton)
+    assert btn is not None and btn.text() == "执行"
+    field = page._editors["LOADDEF"]
+    if isinstance(field, QComboBox):
+        field.setCurrentIndex(1)
     else:
-        value = "00:11:22:33:44:55"
-        editor.setText(value)
-    page.btn_apply.click()
-    assert actions == [("PAIR", value)]
-    assert writes == []
+        field.setText("1")
+
+    btn.click()
+    assert executed == [], "取消确认框后绝不能下发"
+    assert asked and "清空" in asked[0] and "目标模块" in asked[0]
+
+    monkeypatch.setattr(rp.QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+    btn.click()
+    assert executed == [("LOADDEF", "1", True)]
+
+
+def test_action_without_value_is_not_sent(page, session, monkeypatch):
+    """动作行留空：点执行只提示，不占用 AT 通道。"""
+    executed: list[tuple] = []
+    said: list[str] = []
+    monkeypatch.setattr(page, "say", lambda text, *a, **k: said.append(text))
+    monkeypatch.setattr(
+        session.radio, "action", lambda *a, **k: executed.append(a) or {"ok": True}
+    )
+    box = page.table.cellWidget(page._row_of["SCAN_AP"], _C_EDIT)
+    box.findChild(QPushButton).click()
+    assert executed == []
+    assert any("填写" in s for s in said)
 
 
 def test_apply_reports_failure(page, session, monkeypatch):
@@ -433,3 +487,126 @@ def test_discover_populates_and_switch_selects_device(qapp, session, bridge, mon
         assert switched == [mod_a, ""]
     finally:
         p.on_close()
+
+
+def _two_online_page(qapp, session, bridge, monkeypatch, switched: list[str]):
+    """造一台"两台都在线"的链路并建页：返回页面，发现已点过一次。"""
+    mod_a, mod_b = "96-a1-3e-7d-83-88", "96-a1-3e-97-66-80"
+    rows = [
+        {"mac": mod_a, "online": True, "seen_ago_s": 0.1, "source_ip": "0.0.0.0"},
+        {"mac": mod_b, "online": True, "seen_ago_s": 0.2, "source_ip": "0.0.0.0"},
+    ]
+    link = SimpleNamespace(
+        is_open=True,
+        channel="udp",
+        at=SimpleNamespace(target_mac=b""),
+        discover=lambda: {"ok": True, "count": 2, "detail": "", "modules": rows},
+        at_modules=lambda: rows,
+        select_device=lambda mac: {"ok": True, "mac": mac.lower(), "detail": ""},
+    )
+    monkeypatch.setattr(
+        session.radio, "select_device",
+        lambda mac: switched.append(mac) or {"ok": True, "mac": mac.lower(), "detail": ""},
+    )
+    fake = SimpleNamespace(bus=session.bus, radio=session.radio, link=link)
+    p = RadioPage(fake, bridge)
+    monkeypatch.setattr(p, "say", lambda text, *a, **k: None)
+    p.btn_discover.click()
+    return p
+
+
+def test_two_online_modules_remove_auto_choice(qapp, session, bridge, monkeypatch):
+    """两台都在线时不再提供"自动（首个在线模块）"，也不默认选中任何一台。"""
+    switched: list[str] = []
+    p = _two_online_page(qapp, session, bridge, monkeypatch, switched)
+    try:
+        got = [p.combo_device.itemData(i) for i in range(p.combo_device.count())]
+        assert got == ["96-a1-3e-7d-83-88", "96-a1-3e-97-66-80"]
+        assert p.combo_device.currentIndex() == -1
+        assert "在线 2 个" in p.dev_label.text()
+    finally:
+        p.on_close()
+
+
+def test_send_blocked_until_one_module_chosen(qapp, session, bridge, monkeypatch):
+    """未选定目标：读取/下发/动作全部阻断，一次都不会碰到模块。"""
+    switched: list[str] = []
+    p = _two_online_page(qapp, session, bridge, monkeypatch, switched)
+    hits: list = []
+    monkeypatch.setattr(session.radio, "write",
+                        lambda n, v, **k: hits.append(("write", n)) or {"ok": True})
+    monkeypatch.setattr(session.radio, "action",
+                        lambda n, v, **k: hits.append(("action", n)) or {"ok": True})
+    monkeypatch.setattr(session.radio, "read_many",
+                        lambda *a, **k: hits.append(("read",)) or {"ok": True, "values": {}})
+    try:
+        p.table.cellWidget(p._row_of["TXPOWER"], _C_EDIT).setText("12")
+        p.btn_apply.click()
+        p.btn_read.click()
+        assert p._read_worker is None, "未选定目标时不该起读取线程"
+        p._execute_action("PAIR")
+        assert hits == []
+        assert switched == []
+    finally:
+        p.on_close()
+
+
+def test_chosen_module_unblocks_send(qapp, session, bridge, monkeypatch):
+    """手选一台之后恢复正常下发，并在预览区写明这条指令发给了谁。"""
+    switched: list[str] = []
+    p = _two_online_page(qapp, session, bridge, monkeypatch, switched)
+    hits: list = []
+    monkeypatch.setattr(
+        session.radio, "write",
+        lambda n, v, **k: hits.append((n, v)) or {"ok": True, "detail": "已下发并回读确认为 12"},
+    )
+    try:
+        p.combo_device.setCurrentIndex(p.combo_device.findData("96-a1-3e-97-66-80"))
+        assert switched == ["96-a1-3e-97-66-80"]
+        p.table.cellWidget(p._row_of["TXPOWER"], _C_EDIT).setText("12")
+        p.btn_apply.click()
+        assert hits == [("TXPOWER", "12")]
+        assert "96-a1-3e-97-66-80" in p.preview_view.toPlainText()
+    finally:
+        p.on_close()
+
+
+def test_apply_shows_silent_noop_readback(page, session, monkeypatch):
+    """模块回 OK 但回读没变：当前值列改显真实读值，提示里说清"没生效"。"""
+    said: list[str] = []
+    monkeypatch.setattr(page, "say", lambda text, *a, **k: said.append(text))
+    monkeypatch.setattr(
+        session.radio, "write",
+        lambda n, v, **k: {
+            "ok": False, "verified": False, "readback": 6,
+            "detail": "写入未生效：下发 8，回读 6（+TXPOWER: 6dbm）",
+        },
+    )
+    page.table.cellWidget(page._row_of["TXPOWER"], _C_EDIT).setText("8")
+    page.btn_apply.click()
+    assert _cur(page, "TXPOWER") == "6"
+    assert "写入未生效" in page.preview_view.toPlainText()
+    assert any("没变" in s for s in said)
+
+
+def test_dev_label_tracks_targeting(qapp, session, bridge, monkeypatch):
+    """设备标签同时反映"模块表 + 实际定向"：未定向要说清遥测已暂停，选定后立刻改口。"""
+    switched: list[str] = []
+    p = _two_online_page(qapp, session, bridge, monkeypatch, switched)
+
+    def picker(mac: str) -> dict:
+        switched.append(mac)
+        session.radio.at.target_mac = bytes.fromhex(mac.replace("-", "")) if mac else b""
+        return {"ok": True, "mac": mac.lower(), "detail": ""}
+
+    monkeypatch.setattr(session.radio, "select_device", picker)
+    try:
+        assert "在线 2 个" in p.dev_label.text()
+        assert "遥测已暂停" in p.dev_label.text()
+        p.combo_device.setCurrentIndex(p.combo_device.findData("96-a1-3e-97-66-80"))
+        assert switched == ["96-a1-3e-97-66-80"]
+        assert "当前定向 96-a1-3e-97-66-80" in p.dev_label.text()
+        assert "遥测已暂停" not in p.dev_label.text()
+    finally:
+        p.on_close()
+

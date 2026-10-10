@@ -296,14 +296,31 @@ class AtClient:
         lines: list[str] = []
         status = ""
         error = ""
-        started = time.perf_counter()
-        deadline = started + max(0.05, timeout_ms / 1000.0)
+        queued_at = time.perf_counter()
+        deadline = 0.0
         last_response_at = 0.0
+        # rtt 从"拿到锁、真正要上线"开始算：前面排队的几百毫秒是自家线程在等锁，
+        # 不是模块响应慢。把等待算进 rtt 会把 1500ms 的超时显示成 1900ms，
+        # 现场就会误以为"模块变慢了"，其实是自己堵自己。
+        started = queued_at
 
         self._busy += 1
         with self._lock:
+            started = time.perf_counter()
+            queue_ms = (started - queued_at) * 1000.0
             self.demux.begin(token)
             try:
+                if queue_ms >= timeout_ms:
+                    # 排队已经耗尽整条超时预算：现在发出去注定超时，还可能把用户
+                    # 早就放弃的旧指令打到另一台模块上。直接丢弃并报清楚原因。
+                    self._fail_unsent(
+                        payload,
+                        name=name,
+                        kind=kind,
+                        reason=f"排队 {queue_ms:.0f}ms 已耗尽 {timeout_ms}ms 超时预算，"
+                        "本次未发送（AT 对话被前面的请求堵住了）",
+                    )
+                deadline = started + max(0.05, timeout_ms / 1000.0)
                 self._wake(token, transport)
                 gap = max(0, int(self.cfg.pre_silence_ms))
                 if gap:

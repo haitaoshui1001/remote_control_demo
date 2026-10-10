@@ -192,16 +192,29 @@ class UdpAtTransport(ByteTransport):
 
         ``target_mac`` 支持 ``96-a1-3e-7d-83-88`` 文本或 6 字节：显式给出即定向该
         模块（多模块场景由上层 UI 选择）；缺省时回退配置固定目标 → TTL 内在线的
-        第一个模块 → 现场发现握手。目标不在模块表且开了广播扫描时补一次定向握手。
+        第一个模块 → 现场发现握手。
         """
         sock = self.sock
         if sock is None:
             raise OSError("UDP-AT 通道未打开")
         want = self._parse_target(target_mac)
         if want:
-            target = want
-            if want != BROADCAST_MAC and not self._has_module(want):
-                self._handshake(self.cfg.probe_timeout_ms, want)
+            # 定向目标必须"确认在线"才发：先查 TTL 内模块表，不在表里补一次
+            # 定向握手；仍然拿不到就明确失败。绝不能把帧静默发给一台不存在的 MAC
+            # 并顺手把 _at_target 设成它——那会让另一台活着的模块的 op4 应答被
+            # frames_other_src 全部丢弃，表现就是"能发现两台但一台也读不到"。
+            if want == BROADCAST_MAC:
+                target = want
+            else:
+                target = want if self._has_module(want) else self._handshake(
+                    self.cfg.probe_timeout_ms, want
+                )
+            if not target:
+                raise OSError(
+                    f"目标模块离线：{format_mac(want)}"
+                    f"（{self._ttl():.1f}s 内未见其应答），已取消发送；"
+                    "请在电台配置页重新“发现/刷新”或改选在线模块"
+                )
         else:
             target = self._current_target() or self._handshake(self.cfg.probe_timeout_ms)
         if not target:

@@ -448,8 +448,9 @@ def test_udp_at_write_explicit_target_overrides_discovered():
     assert t._at_target == parse_mac(UDP_MOD), "写后要记住期望的应答源"
 
 
-def test_udp_at_write_unknown_explicit_target_handshakes_first():
-    """目标不在模块表：write 前补一次 op1 定向握手，帧仍按目标 MAC 定向发出。"""
+def test_udp_at_write_unknown_explicit_target_fails_after_handshake():
+    """目标不在模块表：先补一次 op1 定向握手；握手等不到它就明确失败，
+    绝不把 AT 帧静默定向到一台不应答的 MAC（那会顺带丢弃另一台的应答）。"""
     from hmi.core.config import AtCfg, UdpAtCfg
     from hmi.transport import UdpAtTransport
     from hmi.transport.udp_at import OP_AT, OP_DISCOVER, parse_frame, parse_mac
@@ -461,10 +462,35 @@ def test_udp_at_write_unknown_explicit_target_handshakes_first():
     )
     fake = _FakeUdpSock()
     t.sock = fake
-    t.write(b"AT+RSSI?\r\n", target_mac="96:a1:3e:7d:83:88")
+    with pytest.raises(OSError, match="离线"):
+        t.write(b"AT+RSSI?\r\n", target_mac="96:a1:3e:7d:83:88")
     ops = [parse_frame(f)[0] for f in fake.sent]
-    assert ops[0] == OP_DISCOVER, "先补发现"
-    assert ops[1] == OP_AT and parse_frame(fake.sent[1])[1] == parse_mac(UDP_MOD)
+    assert ops and ops[0] == OP_DISCOVER, "先补发现"
+    assert OP_AT not in ops, "确认离线就不该把 AT 帧放上线"
+    assert t._at_target == b"", "失败路径不得污染期望应答源"
+
+
+def test_udp_at_write_target_surfaced_during_handshake_is_sent():
+    """定向握手期间模块表里出现该 MAC：帧仍按目标定向发出并记为期望应答源。"""
+    import threading
+
+    from hmi.core.config import AtCfg, UdpAtCfg
+    from hmi.transport import UdpAtTransport
+    from hmi.transport.udp_at import OP_AT, parse_frame, parse_mac
+
+    t = UdpAtTransport(
+        AtCfg(),
+        UdpAtCfg(host_id=UDP_HOST, probe_timeout_ms=800),
+        name="udp_at",
+    )
+    fake = _FakeUdpSock()
+    t.sock = fake
+    want = parse_mac(UDP_MOD)
+    threading.Timer(0.1, lambda: t._remember_module(want, "0.0.0.0")).start()
+    t.write(b"AT+RSSI?\r\n", target_mac=UDP_MOD)
+    at = [f for f in fake.sent if parse_frame(f)[0] == OP_AT]
+    assert len(at) == 1 and parse_frame(at[0])[1] == want
+    assert t._at_target == want
 
 
 def test_udp_at_write_broadcast_target_clears_expected_src():

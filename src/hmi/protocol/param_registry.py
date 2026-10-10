@@ -73,11 +73,18 @@ class ParamSpec:
     #: 遥测轮询用：True 表示链路侧随时会变的只读量（RSSI/EVM/连接态等）。
     #: 首轮全量读取后，后续轮询只读 volatile 项 + 上轮失败项，减轻总线压力。
     volatile: bool = False
+    #: 动作类危险指令的执行前确认文案；非空即代表 UI 必须弹二次确认才允许上线。
+    #: 真相源在注册表，页面只消费这个字段，不硬编码参数名。
+    confirm: str = ""
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def wire_name(self) -> str:
         return (self.at or self.name).upper()
+
+    @property
+    def needs_confirm(self) -> bool:
+        return bool(self.confirm)
 
     @property
     def readable(self) -> bool:
@@ -343,6 +350,10 @@ _SPECS: dict[str, ParamSpec] = {
             order=200,
             section="6.3.5",
             desc="1 启动配对、0 停止；配对成功产生 PAIR SUCCESS 消息但不会自动退出",
+            confirm=(
+                "配对会改写本机的组网关系并长时间占用模块：启动后本模块可能与对端"
+                "断开，需要重新配对才能恢复通信。确认向目标模块下发配对指令？"
+            ),
         ),
         _s(
             "UNPAIR",
@@ -354,6 +365,10 @@ _SPECS: dict[str, ParamSpec] = {
             order=210,
             section="6.3.19",
             desc="成功回显 unpair sta:<mac>，不存在回显 sta:<mac> is not exist",
+            confirm=(
+                "解除配对会立刻断开该 STA 与 AP 的链路，数传/图传随即中断，"
+                "必须重新配对才能恢复。确认执行？"
+            ),
         ),
         _s(
             "LOADDEF",
@@ -367,6 +382,11 @@ _SPECS: dict[str, ParamSpec] = {
             order=220,
             section="6.3.20",
             desc="清空全部参数，危险操作，UI 需二次确认",
+            confirm=(
+                "恢复出厂会清空目标模块的全部参数（频点、功率、SSID、密钥、配对关系）"
+                "并重启模块，本页配置的参数不会自动写回。模块重启期间可能失联，"
+                "两台都需重新配对才能恢复通信。确认恢复出厂？"
+            ),
         ),
         _s(
             "SCAN_AP",

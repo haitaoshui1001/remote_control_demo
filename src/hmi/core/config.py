@@ -18,7 +18,17 @@ from .utils import parse_bool, safe_int
 
 
 def project_root(start: Path | None = None) -> Path:
-    """向上查找带 src/ 标记的目录作为项目根。"""
+    """向上查找带 src/ 标记的目录作为项目根。
+
+    打包版（PyInstaller 冻结）里 ``__file__`` 指向 ``_internal``，一路往上走可能撞到
+    别处恰好存在的 ``src/hmi``（构建机上就会），日志和流水于是落到交付目录之外。
+    所以入口在启动时把 ``EWD611_HOME`` 钉成 exe 所在目录，这里优先认它。
+    """
+    pinned = os.environ.get("EWD611_HOME")
+    if pinned:
+        home = Path(pinned)
+        if home.is_dir():
+            return home
     here = (start or Path(__file__).resolve()).parent
     for cand in [here, *here.parents, Path.cwd()]:
         if (cand / "src" / "hmi").is_dir():
@@ -119,7 +129,9 @@ class AtCfg:
     fallback_channel: str = ""
     line_ending: str = "crlf"
     timeout_ms: int = 1500
-    retries: int = 2
+    #: 只重试 1 次：超时类失败最坏耗时 = timeout_ms ×(1+retries)。原来 2 次重试
+    #: 让一条读不上的参数堵住 AT 锁 4.5s，界面上"点了没反应"就是这么来的。
+    retries: int = 1
     ok_tokens: list[str] = field(default_factory=lambda: ["OK"])
     err_tokens: list[str] = field(default_factory=lambda: ["ERROR", "ERR", "FAIL"])
     pre_silence_ms: int = 20
@@ -263,17 +275,12 @@ class TelemetryCfg:
 
 @dataclass
 class MotionCfg:
-    """视频页方向运动控制：vx/vr 双通道斜率斜坡 + 周期重发（见设计报告运动控制小节）。"""
+    """视频页方向运动控制：vx/vr 双通道直通 + 周期重发（见设计报告运动控制小节）。"""
 
     enabled: bool = True
     #: 线速度上限 m/s、角速度上限 rad/s（按住时的目标值，用户要求放配置文件）
     max_linear_speed: float = 1.0
     max_angular_speed: float = 0.5
-    #: 每拍速度增量斜率：加速档与减速（松开滑停）档分开，减速默认更快更安全
-    linear_accel: float = 0.5
-    linear_decel: float = 0.8
-    angular_accel: float = 0.3
-    angular_decel: float = 0.5
     #: 按住期间周期重发帧间隔（ms），抗丢包；节拍器下限 50
     send_period_ms: int = 100
     #: 失焦/切页时立即清零速度并补发停止帧
@@ -565,15 +572,6 @@ def _validate(cfg: AppConfig) -> None:
             mot.max_linear_speed = 1.0
         if mot.max_angular_speed <= 0.0:
             mot.max_angular_speed = 0.5
-    for _name, _fallback in (
-        ("linear_accel", 0.5),
-        ("linear_decel", 0.8),
-        ("angular_accel", 0.3),
-        ("angular_decel", 0.5),
-    ):
-        if getattr(mot, _name) <= 0.0:
-            cfg.meta.warnings.append(f"运动斜率 {_name} 必须大于 0，已回退 {_fallback}")
-            setattr(mot, _name, _fallback)
     if mot.send_period_ms < 50:
         cfg.meta.warnings.append(f"运动重发周期 {mot.send_period_ms}ms 过小，已夹到 50ms")
         mot.send_period_ms = 50

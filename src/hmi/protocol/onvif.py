@@ -326,7 +326,7 @@ def _error_message(url: str, status: int, reason: str, data: bytes) -> str:
     if data:
         try:
             root = ET.fromstring(data)
-        except ET.ParseError:
+        except (ET.ParseError, ImportError):
             root = None
         if root is not None and _local(root) == "Envelope":
             fault = _find(root, "Fault")
@@ -336,9 +336,25 @@ def _error_message(url: str, status: int, reason: str, data: bytes) -> str:
     return f"{url} HTTP {status}：{reason}"
 
 
+def _fromstring(data: bytes) -> ET.Element:
+    """``ET.fromstring`` 的包装：解析器缺失也翻译成 ``OnvifError``。
+
+    标准库要到真正建树时才加载 ``pyexpat``，此时抛的是 ``ImportError``——
+    它既不是 ``ParseError`` 也不是 ``OnvifError``，会一路逃出上层错误处理、
+    打死工作线程，界面只表现为"读取中"永远不返回。
+    """
+    try:
+        return ET.fromstring(data)
+    except ImportError as exc:  # pragma: no cover - 仅解析器不可用时走到
+        raise OnvifError(
+            f"XML 解析器不可用（{exc}）：交付包内 libexpat.dll 与 pyexpat.pyd "
+            "不匹配，需重新打包"
+        ) from exc
+
+
 def _parse_xml(data: bytes, url: str) -> ET.Element:
     try:
-        root = ET.fromstring(data)
+        root = _fromstring(data)
     except ET.ParseError as exc:
         raise OnvifError(
             f"{url} 应答不是合法 XML：{exc}（开头：{_head(data)!r}）"

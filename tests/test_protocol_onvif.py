@@ -26,6 +26,7 @@ from hmi.protocol.onvif import (
     EncoderSettings,
     OnvifClient,
     OnvifError,
+    _parse_xml,
     _pick_media_url,
     _wsse_header,
 )
@@ -805,3 +806,20 @@ def test_clamped_uses_resolution_of_selected_encoding():
     out, fixed = st.clamped(_xm_opt())
     assert (out.width, out.height) == (1920, 1080)
     assert any("分辨率" in f for f in fixed)
+
+
+def test_parse_xml_translates_missing_expat(monkeypatch):
+    """缺 XML 解析器（冻结包 libexpat 不匹配）也必须落成 OnvifError。
+
+    标准库要到建树时才加载 pyexpat，抛的是 ImportError；它不属于
+    OnvifError，会逃出服务层、打死工作线程，界面只剩永久"读取中"。
+    """
+    import xml.etree.ElementTree as ET
+
+    def boom(_data):
+        raise ImportError("No module named expat; use SimpleXMLTreeBuilder instead")
+
+    monkeypatch.setattr(ET, "fromstring", boom)
+    with pytest.raises(OnvifError) as ei:
+        _parse_xml(b"<x/>", "http://192.168.1.10:8899/onvif/media")
+    assert "XML 解析器不可用" in str(ei.value)

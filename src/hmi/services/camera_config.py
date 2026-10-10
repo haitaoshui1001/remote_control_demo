@@ -122,6 +122,16 @@ class CameraConfigService:
             return CameraParams(
                 ok=False, action="load", stream_index=idx, error=str(exc)
             )
+        except Exception as exc:  # noqa: BLE001 - 界面必须拿到结果，不能卡住
+            # 非协议异常（如冻结包缺 XML 解析器的 ImportError）也必须落成
+            # 一条可读结果，否则工作线程静默死亡、弹窗永久"读取中"。
+            self.log.exception("摄像头参数读取异常（流 %s）", idx)
+            return CameraParams(
+                ok=False,
+                action="load",
+                stream_index=idx,
+                error=f"{type(exc).__name__}: {exc}",
+            )
 
     def apply(self, st: EncoderSettings) -> CameraParams:
         """按值域过滤后写入；成功则重启取流让新参数生效。"""
@@ -133,6 +143,11 @@ class CameraConfigService:
         except OnvifError as exc:
             self.log.warning("摄像头参数写入失败：%s", exc)
             return CameraParams(ok=False, action="apply", error=str(exc))
+        except Exception as exc:  # noqa: BLE001 - 同 load()，异常必须落成结果
+            self.log.exception("摄像头参数写入异常")
+            return CameraParams(
+                ok=False, action="apply", error=f"{type(exc).__name__}: {exc}"
+            )
         if self.video is not None:
             try:
                 self.video.restart()
@@ -163,7 +178,16 @@ class CameraConfigService:
             return True
 
     def _run(self, fn, args: tuple[Any, ...]) -> None:
-        result = fn(*args)
+        """在工作线程里跑一个动作；无论成功、失败还是炸了都必须回总线。"""
+        try:
+            result = fn(*args)
+        except Exception as exc:  # noqa: BLE001 - 线程静默死亡 = 界面永久等待
+            self.log.exception("摄像头配置线程异常终止")
+            result = CameraParams(
+                ok=False,
+                action=getattr(fn, "__name__", "load"),
+                error=f"{type(exc).__name__}: {exc}",
+            )
         self.bus.publish(Events.CAMERA_CFG, result)
 
     def load_async(self, stream_index: int) -> bool:

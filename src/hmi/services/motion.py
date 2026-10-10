@@ -1,4 +1,4 @@
-"""运动控制服务：vx/vr 双通道斜坡 + 按住周期重发 + 松开滑停补发停止帧。
+"""运动控制服务：vx/vr 双通道直通（按住即满速、松手即停，不加减速）+ 按住周期重发 + 落零补发停止帧。
 
 与透传/遥测服务同一套收口纪律：
 - ``advance(dt)`` 是纯计算，时间由调用方显式给出，单测无需 sleep 也无时钟依赖；
@@ -8,6 +8,7 @@
 - 周期重发是抗丢包设计：远端哪怕丢两三帧，按住期间速度指令仍是连续的。
 
 方向约定（与界面键盘一致）：up/down 改 vx，left/right 改 vr，左转为正。
+两通道相互独立：前进键与转向键同时按住，vx、vr 会叠加进同一帧同时下发。
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ def s16_hex(value: float) -> str:
 
 
 class MotionService:
-    """运动状态机：目标值由按键决定，当前值每拍沿斜率逼近目标。"""
+    """运动状态机：按键决定目标值，下一拍当前值直接跳到目标（无斜坡）。"""
 
     def __init__(
         self,
@@ -134,7 +135,7 @@ class MotionService:
         self._publish()
 
     def emergency_stop(self) -> None:
-        """失焦/切页急停：当前值直接清零并立即补停止帧，不走斜坡。"""
+        """失焦/切页急停：当前值直接清零并立即补停止帧。"""
         with self._lock:
             self._held.clear()
             self._tvx = self._tvr = 0.0
@@ -144,7 +145,7 @@ class MotionService:
                 self._send(0.0, 0.0)
         self._publish()
 
-    # ------------------------------------------------------------------ 斜坡与发帧
+    # ------------------------------------------------------------------ 发帧
     def _recompute_target(self) -> None:
         m = self.mcfg
         lin = (1 if "up" in self._held else 0) - (1 if "down" in self._held else 0)
@@ -152,23 +153,11 @@ class MotionService:
         self._tvx = lin * m.max_linear_speed
         self._tvr = ang * m.max_angular_speed
 
-    @staticmethod
-    def _ramp(cur: float, target: float, accel: float, decel: float, dt: float) -> float:
-        if cur == target:
-            return cur
-        slope = decel if abs(target) < abs(cur) else accel
-        delta = slope * max(0.0, float(dt))
-        diff = target - cur
-        if abs(diff) <= delta:
-            return target
-        return cur + (delta if diff > 0 else -delta)
-
     def advance(self, dt: float) -> dict[str, Any]:
-        """推进一拍：斜坡更新 + 该发则发（活动期每拍发，落零边沿补一次停止帧）。"""
+        """推进一拍：当前值直通目标（不加减速）+ 该发则发（活动期每拍发，落零边沿补一次停止帧）。"""
         with self._lock:
-            m = self.mcfg
-            self._vx = self._ramp(self._vx, self._tvx, m.linear_accel, m.linear_decel, dt)
-            self._vr = self._ramp(self._vr, self._tvr, m.angular_accel, m.angular_decel, dt)
+            self._vx = self._tvx
+            self._vr = self._tvr
             moving = self._vx != 0.0 or self._vr != 0.0
             if moving:
                 self._send(self._vx, self._vr)
@@ -186,7 +175,7 @@ class MotionService:
         else:
             dt = now - self._last_dt_ref
         self._last_dt_ref = now
-        # 进程挂起/节流恢复后 dt 可能巨大，限一拍上限防止速度直接跳变。
+        # dt 仅作节拍占位：速度直通目标值，不再依赖 dt 渐进；长 dt 也不会有额外影响。
         self.advance(min(dt, 1.0))
 
     def _render(self, vx: float, vr: float) -> bytes:

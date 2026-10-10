@@ -201,6 +201,16 @@ def test_read_many_short_circuits_when_channel_down(radio, link):
     assert [c for c in link.at.calls if c[0] == "query_value"] == [("query_value", "MODE")]
 
 
+def test_read_many_short_circuits_when_target_offline(radio, link):
+    """目标模块离线被传输层取消发送：同样算"发不出去"，第一条就早停。"""
+    link.at.raise_on = "query_value"
+    link.at.raise_text = "发送失败：目标模块离线：96-a1-3e-97-66-80（2.0s 内未见其应答），已取消发送"
+    r = radio.read_many(["MODE", "SSID", "TXPOWER"])
+    assert r["ok"] is False and r["count"] == 0
+    assert r["values"]["SSID"]["detail"].startswith("通道不可用，已跳过其余读取：")
+    assert [c for c in link.at.calls if c[0] == "query_value"] == [("query_value", "MODE")]
+
+
 def test_read_many_keeps_going_on_module_errors(radio, link):
     """模块回了 ERROR 属单参数失败，后面的参数照样该读。"""
     link.at.raise_names = {"MODE"}
@@ -219,11 +229,87 @@ def test_read_line_returns_exchange(radio, link):
 
 # ------------------------------------------------------------------ 写入
 def test_write_success_backfills(radio, link):
+    link.at.value_map = {"MODE": "sta"}
     r = radio.write("MODE", "sta")
     assert r["ok"] is True and r["rtt_ms"] == 1.5
     assert radio.params.mode == "sta"
     assert "已下发" in r["detail"]
     assert radio.writes == 1
+    assert r["verified"] is True and r["readback"] == "sta"
+
+
+def test_write_confirmed_by_readback(radio, link):
+    """模块回了 OK 但值也真的生效：回读一致才算成功，并明确告知已确认。"""
+    link.at.value_map = {"TXPOWER": "8"}
+    r = radio.write("TXPOWER", 8)
+    assert r["ok"] is True and r["verified"] is True
+    assert radio.params.txpower == 8
+    assert "回读确认" in r["detail"]
+    assert [c for c in link.at.calls if c[0] == "query_value"] == [("query_value", "TXPOWER")]
+
+
+def test_write_rejects_silent_noop(radio, link, bus):
+    """这就是实机故障：下发 8 模块回 OK，回读还是 6——必须报失败并回填真实值。"""
+    got = _alarms(bus)
+    link.at.value_map = {"TXPOWER": "6"}
+    r = radio.write("TXPOWER", 8)
+    assert r["ok"] is False and r["verified"] is False
+    assert radio.params.txpower == 6
+    assert radio.writes == 1 and radio.failures == 1
+    assert "写入未生效" in r["detail"]
+    assert any(a.code == "AT_WRITE_UNVERIFIED" for a in got)
+
+
+def test_write_out_of_range_readback_counts_as_mismatch(radio, link, bus):
+    """实机 AP 会把下发 8 答成 ``+TXPOWER:1dbm``：规格外的读数也必须判出不符。
+
+    注册表按手册收紧（6~20 dBm），越界值 ``validate()`` 不认；若因此判成"说不清"，
+    写入就照时报成功——正是"下发 8 显示成功、表格里还是 1"的由来。
+    """
+    got = _alarms(bus)
+    sunk: dict[str, object] = {}
+    link.monitor.absorb = lambda name, value, **kw: sunk.__setitem__(name, value)
+    link.at.value_map = {"TXPOWER": "1dbm"}
+    r = radio.write("TXPOWER", 8)
+    assert r["ok"] is False and r["verified"] is False
+    assert "写入未生效" in r["detail"] and "超出规格范围" in r["detail"]
+    # 越界读数不回填 params：apply_to_params 不校验，一旦写进 1，
+    # 之后的批量下发会在 plan() 直接抛"不能小于 6 dBm"。
+    assert radio.params.txpower == 8
+    assert sunk["TXPOWER"] == "1dbm"          # 但遥测累积要记模块的真实答案
+    assert any(a.code == "AT_WRITE_UNVERIFIED" for a in got)
+
+
+def test_write_out_of_range_readback_matching(radio, link):
+    """下发值本身超规格、模块如实回读：算已确认，但要提示超出范围。"""
+    link.at.value_map = {"TXPOWER": "1dbm"}
+    r = radio.write("TXPOWER", 1)
+    assert r["ok"] is True and r["verified"] is True
+    assert "超出规格范围" in r["detail"]
+
+
+def test_write_unreadable_kind_skips_verify(radio, link):
+    """不可读 / 结构化列表类参数不做回读，避免误报。"""
+    r = radio.write("SSID", "AP_TEST")
+    assert r["ok"] is True and "verified" not in r
+    assert not [c for c in link.at.calls if c[0] == "query_value"]
+
+
+def test_write_readback_failure_stays_ok(radio, link, bus):
+    """SET 已成功，只是回读这一步失败了：不翻脸成失败，但也不谎称已确认。"""
+    got = _alarms(bus)
+    link.at.raise_on = "query_value"
+    r = radio.write("MODE", "sta")
+    assert r["ok"] is True and r["verified"] is None
+    assert radio.failures == 0
+    assert "回读失败" in r["detail"]
+    assert not any(a.code == "AT_WRITE_UNVERIFIED" for a in got)
+
+
+def test_write_verify_false_is_explicit(radio, link):
+    r = radio.write("MODE", "sta", verify=False)
+    assert r["ok"] is True and "verified" not in r
+    assert not [c for c in link.at.calls if c[0] == "query_value"]
 
 
 def test_write_unknown_param_skips_channel(radio, link):
@@ -295,9 +381,26 @@ def test_apply_aterror_alarms(radio, bus, link):
 
 # ------------------------------------------------------------------ 动作指令
 def test_action_success(radio, link):
-    r = radio.action("PAIR")
+    r = radio.action("PAIR", confirmed=True)
     assert r["ok"] is True and r["detail"] == "OK"
     assert radio.writes == 1
+
+
+def test_dangerous_action_requires_confirmation(radio, link):
+    """注册表标了 confirm 的动作，不传 confirmed 一律不上线（LOADDEF 误点保护）。"""
+    before = len(link.at.calls)
+    r = radio.action("LOADDEF", 1)
+    assert r["ok"] is False
+    assert r["need_confirm"] is True and r["confirm"]
+    assert len(link.at.calls) == before, "未确认时不得发出任何 AT 帧"
+    assert radio.writes == 0 and radio.failures == 0
+    ok = radio.action("LOADDEF", 1, confirmed=True)
+    assert ok["ok"] is True and len(link.at.calls) == before + 1
+
+
+def test_non_dangerous_action_needs_no_confirmation(radio, link):
+    """SCAN_AP 没标 confirm：直接执行，不受闸门影响。"""
+    assert radio.action("SCAN_AP", 3)["ok"] is True
 
 
 def test_action_with_value_backfills_cache(radio, link):
@@ -383,6 +486,25 @@ def test_select_device_unsupported_link(radio):
     assert res["ok"] is False and "不支持" in res["detail"]
 
 
+def test_target_reports_directed_mac_and_online_count(link, bus):
+    """界面靠它显示"这条指令发给了谁"：目标 MAC + 在线台数。"""
+    mac = bytes.fromhex("96a13e976680")
+    link.at.target_mac = mac
+    link.at_modules = lambda: [
+        {"mac": "96-a1-3e-97-66-80", "online": True},
+        {"mac": "96-a1-3e-7d-83-88", "online": False},
+    ]
+    svc = RadioService(link, _cfg(), bus=bus)
+    t = svc.target()
+    assert t["mac"] == "96-a1-3e-97-66-80" and t["auto"] is False
+    assert t["total"] == 2 and t["online"] == 1
+
+
+def test_target_is_auto_when_no_directed_mac(radio):
+    t = radio.target()
+    assert t["mac"] == "" and t["auto"] is True and t["total"] == 0
+
+
 def test_per_device_param_caches(link, bus):
     picks: list[str] = []
 
@@ -423,3 +545,43 @@ def test_load_defaults_overwrites_current_device_cache(link, bus):
     svc.load_defaults()
     assert svc.params.mode is None
     assert svc._caches[""] is svc.params, "出厂默认要写回当前设备的缓存槽"
+
+
+# ------------------------------------------------------------------ 遥测累积回灌
+def test_read_write_feed_telemetry_accumulator(link, bus):
+    """表格"当前值"由 1Hz 快照驱动：手动读/写的新值必须回灌进 ``monitor._merged``，
+    否则"下发 8、回读确认 8，一秒后表格又变回首轮的 1"。
+    """
+    sunk: dict[str, object] = {}
+    link.monitor.absorb = lambda name, value, **kw: sunk.__setitem__(name, value)
+    svc = RadioService(link, _cfg(), bus=bus)
+
+    link.at.value_map = {"TXPOWER": 8}
+    assert svc.read("TXPOWER")["ok"] is True
+    assert sunk == {"TXPOWER": 8}
+
+    # 下发 8、模块里回读是 6：回灌的必须是模块真实答案 6，不能是下发的 8
+    link.at.value_map = {"TXPOWER": 6}
+    r = svc.write("TXPOWER", 8)
+    assert r["ok"] is False and r["verified"] is False
+    assert sunk["TXPOWER"] == 6
+
+
+def test_absorb_optional_when_monitor_lacks_it(radio, link):
+    """链路桩没有 absorb（串口/仿真）：读写照常成功，绝不因为回灌失败而报错。"""
+    assert not hasattr(link.monitor, "absorb")
+    assert radio.read("MODE")["ok"] is True
+    assert radio.write("MODE", "sta", verify=False)["ok"] is True
+
+
+def test_absorb_failure_does_not_change_read_write_result(link, bus):
+    """回灌只是显示优化：它抛异常也不能影响读写结论。"""
+
+    def boom(*_a, **_k):
+        raise RuntimeError("遥测累积不可用")
+
+    link.monitor.absorb = boom
+    svc = RadioService(link, _cfg(), bus=bus)
+    link.at.value_map = {"TXPOWER": 8}
+    assert svc.read("TXPOWER")["ok"] is True
+    assert svc.params.txpower == 8

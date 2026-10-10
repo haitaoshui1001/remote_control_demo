@@ -365,3 +365,68 @@ def test_set_names_resets_accumulation():
     snap = mon.poll_once(publish=False)
     assert at.calls[1] == ["RSSI"]
     assert snap.role is None  # MODE 被移出清单，旧值不得残留
+
+
+# ------------------------------------------------------ 手动读写结果回灌（absorb）
+def test_absorb_keeps_manual_value_alive_across_rounds():
+    """实机故障的正面用例：首轮读到 1，手动读/写确认是 8，之后一秒的快照都得停在 8。
+
+    TXPOWER 是静态项，第二轮不会再读；不回灌的话快照会一直显示首轮的 1。
+    """
+    at = _RecordingAt(results={"MODE": (True, "ap", "ap"), "TXPOWER": (True, 1, "1")})
+    mon = LinkMonitor(at, cfg=LinkCfg(auto_poll=False))
+    mon.set_names(["MODE", "CONN_STATE", "RSSI", "TXPOWER"])
+    assert mon.poll_once(publish=False).txpower_dbm == 1.0
+
+    assert mon.absorb("SSID", 8) is False  # 清单外的键不进累积，免得污染快照
+    assert mon.absorb("TXPOWER", 8) is True
+    snap2 = mon.poll_once(publish=False)
+    assert at.calls[1] == ["CONN_STATE", "RSSI"]  # 静态项仍不重读
+    assert snap2.txpower_dbm == 8.0
+
+    # 失败也要能回灌：ok=False 让这项重新回到补读清单，界面不再显示"绿色=已读到"
+    assert mon.absorb("TXPOWER", None, ok=False, err="超时未响应") is True
+    snap3 = mon.poll_once(publish=False)
+    assert "TXPOWER" in at.calls[2]
+    assert snap3.txpower_dbm == 1.0  # 补读成功，模块里真实的 1 又回来了
+
+
+# ------------------------------------------- 多台在线且未定向：宁可不读，也不混着读
+def test_poll_skipped_when_multiple_online_and_untargeted():
+    """两台同时应答广播时答案会交替混进同一份累积（8dbm/1dbm 交替的成因），必须停手。"""
+    at = _RecordingAt(results={"MODE": (True, "ap", "ap"), "TXPOWER": (True, 8, "8")})
+    bus = EventBus()
+    codes: list[str] = []
+    bus.subscribe(Events.ALARM, lambda _t, ev: codes.append(ev.code))
+    modules = [
+        {"mac": "96-a1-3e-7d-83-88", "online": True},
+        {"mac": "96-a1-3e-97-66-80", "online": True},
+    ]
+    mon = LinkMonitor(at, bus=bus, cfg=LinkCfg(auto_poll=False), modules_provider=lambda: modules)
+    mon.set_names(["MODE", "TXPOWER"])
+
+    assert mon.poll_once(publish=False) is None
+    assert at.calls == [] and mon.polls == 0 and mon.skips == 1
+    assert codes == ["AT_TARGET_AMBIGUOUS"]
+    mon.poll_once(publish=False)
+    assert mon.skips == 2 and codes == ["AT_TARGET_AMBIGUOUS"]  # 10s 内不刷屏
+
+    at.target_mac = bytes.fromhex("96a13e7d8388")
+    snap = mon.poll_once(publish=False)
+    assert snap is not None and snap.txpower_dbm == 8.0 and mon.polls == 1
+
+    at.target_mac = b""
+    assert mon.poll_once(publish=False) is snap
+    assert mon.skips == 3 and codes == ["AT_TARGET_AMBIGUOUS"] * 2  # 重新提示一次
+
+    modules.pop()  # 只剩一台：定向兜底就是它，不必暂停
+    assert mon.poll_once(publish=False) is not None
+
+
+def test_no_provider_means_never_ambiguous():
+    """串口/仿真链路没有在线模块表（``at_modules()`` 为空），行为与从前完全一致。"""
+    at = _RecordingAt()
+    mon = LinkMonitor(at, cfg=LinkCfg(auto_poll=False), modules_provider=lambda: [])
+    mon.set_names(["MODE"])
+    assert mon.poll_once(publish=False) is not None
+    assert mon.skips == 0

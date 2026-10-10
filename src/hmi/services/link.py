@@ -89,6 +89,7 @@ class LinkService:
             bus=self.bus,
             cfg=cfg.link,
             log=get_logger(f"hmi.protocol.link.{self.endpoint}"),
+            modules_provider=self.at_modules,
         )
         self._ticker = Ticker(
             f"link-{self.endpoint}-stale",

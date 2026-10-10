@@ -2,8 +2,10 @@
 
 表单行来自 ``RadioService.catalog()``——注册表是唯一真相源，页面不硬编码任何
 参数名、范围或枚举；协议手册改了注册表，这一页自动跟着变。可写行给出编辑控件
-（有枚举的用下拉，其余用文本框，留空即不发送），只读行禁用编辑；
-"动作指令（只写）"分组的行经 ``action()`` 执行，其余写路径经 ``write()``。
+（有枚举的用下拉，其余用文本框，留空即不发送），只读行禁用编辑。
+"动作指令（只写）"分组单独处理：不进"预览/下发修改"批量流程，每行一个"执行"
+按钮经 ``action()`` 下发；注册表标了 ``confirm`` 的危险动作（PAIR / UNPAIR /
+LOADDEF）先弹二次确认，确认文案同样来自注册表，页面不写死参数名。
 
 周期回填走合并类主题 ``RADIO_PARAMS``（遥测快照的 16 键视图）：只刷"当前值"
 列，不碰用户尚未下发的编辑。手动"读取全部"放到后台线程跑 ``read_many()``——
@@ -29,6 +31,7 @@ from PyQt5.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QStyle,
@@ -168,6 +171,9 @@ class RadioPage(BasePage):
         super().__init__(session, bridge, parent)
         self._row_of: dict[str, int] = {}
         self._kind_of: dict[str, str] = {}
+        self._confirm_of: dict[str, str] = {}
+        #: 在线模块 ≥2 台后置 False：不再提供"自动（首个在线模块）"，必须先手选一台。
+        self._auto_allowed = True
         self._editors: dict[str, QWidget] = {}
         self._read_worker: _ReadWorker | None = None
         self._build_widgets()
@@ -189,6 +195,7 @@ class RadioPage(BasePage):
         dev_row.addWidget(QLabel("目标设备"))
         self.combo_device = QComboBox()
         self.combo_device.setMinimumWidth(260)
+        self.combo_device.setPlaceholderText("选择目标模块")
         self.btn_discover = QPushButton("发现/刷新")
         self.dev_label = QLabel("尚未发现模块")
         self.dev_label.setStyleSheet(f"color:{_DIM_COLOR.name()};")
@@ -204,7 +211,12 @@ class RadioPage(BasePage):
         self.btn_preview = QPushButton("预览下发")
         self.btn_apply = QPushButton("下发修改")
         self.btn_clear = QPushButton("清空编辑")
-        self.btn_defaults = QPushButton("恢复出厂")
+        self.btn_defaults = QPushButton("清空本地缓存")
+        self.btn_defaults.setToolTip(
+            "丢弃本机缓存的参数值，下次读取完全以模块为准；"
+            "不会向模块发任何指令。真要恢复出厂请展开"
+            "“动作指令（只写）”分组执行 LOADDEF"
+        )
         self.btn_reconnect = QPushButton("重新连接")
         for b in (self.btn_read, self.btn_preview, self.btn_apply, self.btn_clear):
             bar.addWidget(b)
@@ -309,26 +321,60 @@ class RadioPage(BasePage):
         if not prev:
             prev = self._current_device_mac(link)
         chosen = prev if any(str(m.get("mac", "")) == prev for m in modules) else ""
+        online_n = sum(1 for m in modules if m.get("online"))
+        # 只有一台（或还没发现到设备）时才允许"自动"。两台都在线还自动选，等于
+        # 随机挑一台下发——正是"写功率 8 显示成功、读回还是 6"的成因。
+        self._auto_allowed = online_n <= 1
         self.combo_device.blockSignals(True)
         try:
             self.combo_device.clear()
-            self.combo_device.addItem("自动（首个在线模块）", "")
+            if self._auto_allowed:
+                self.combo_device.addItem("自动（首个在线模块）", "")
             for m in modules:
                 mac = str(m.get("mac", ""))
                 tag = "在线" if m.get("online") else "离线"
                 self.combo_device.addItem(f"{mac}（{tag}）", mac)
-            pos = self.combo_device.findData(chosen)
-            self.combo_device.setCurrentIndex(pos if pos >= 0 else 0)
+            if chosen:
+                self.combo_device.setCurrentIndex(self.combo_device.findData(chosen))
+            elif self._auto_allowed:
+                self.combo_device.setCurrentIndex(0)
+            else:
+                self.combo_device.setCurrentIndex(-1)
         finally:
             self.combo_device.blockSignals(False)
-        if modules:
-            online_n = sum(1 for m in modules if m.get("online"))
-            self.dev_label.setText(f"共 {len(modules)} 个，在线 {online_n} 个")
-        else:
-            self.dev_label.setText("未发现模块，点“发现/刷新”")
+        self._render_dev_label(modules)
         if prev and chosen != prev:
-            # 原选中模块已消失：回到"自动"并让服务层同步清掉定向目标。
-            self._on_device_changed()
+            # 原选中模块已消失：直接按新的 chosen（可能是 ""）同步服务层定向目标，
+            # 不能依赖下拉当前项——多台在线时这里可能根本没有可选项（index = -1）。
+            self._select_target(chosen)
+
+    def _render_dev_label(self, modules: list[dict]) -> None:
+        """设备标签只反映"模块表 + 实际定向"，任何一处变了就该重画一次。
+
+        原来这段文本只在点“发现/刷新”时算，选定目标后仍显示"当前未定向"，与预览区
+        的"已定向"互相矛盾；多台在线又确实没定向时遥测会被 LinkMonitor 跳过，这里
+        直接把后果写出来，用户才知道为什么数字不动。
+        """
+        if not modules:
+            self.dev_label.setText("未发现模块，点“发现/刷新”")
+            return
+        online_n = sum(1 for m in modules if m.get("online"))
+        target = self._radio_target().get("mac") or ""
+        if target:
+            tail = f"，当前定向 {target}"
+        elif online_n >= 2:
+            tail = "，当前未定向（多台在线，遥测已暂停，请先选一台）"
+        else:
+            tail = "，当前未定向"
+        self.dev_label.setText(f"共 {len(modules)} 个，在线 {online_n} 个{tail}")
+
+    def _sync_device_label(self) -> None:
+        """按当前模块表重画设备标签（不发网络，只读传输层缓存）。"""
+        link = self.service("link")
+        if link is None or not self._device_support(link):
+            return
+        getter = getattr(link, "at_modules", None)
+        self._render_dev_label(list(getter()) if callable(getter) else [])
 
     def _on_discover(self) -> None:
         link = self.service("link")
@@ -354,31 +400,37 @@ class RadioPage(BasePage):
         self._refresh_devices(modules)
         self.say(str(res.get("detail") or f"发现完成：{len(modules)} 个"))
 
-    def _on_device_changed(self, _index: int = 0) -> None:
-        idx = self.combo_device.currentIndex()
-        if idx < 0:
-            return
-        mac = str(self.combo_device.itemData(idx) or "")
+    def _select_target(self, mac: str) -> bool:
+        """把下拉里的选择真正落到服务层/传输层；返回是否切换成功。"""
         link = self.service("link")
         if not self._device_support(link):
-            return
+            return False
         radio = self.service("radio")
         switcher = getattr(radio, "select_device", None) if radio is not None else None
         if not callable(switcher):
-            return
+            return False
         res = dict(switcher(mac) or {})
         if not res.get("ok"):
             self.say(f"切换失败：{res.get('detail', '')}", 8000)
-            return
+            return False
         # 换模块 = 换一套参数：清掉未下发的编辑，重读注册表并回填该设备缓存视图。
         self._on_clear_edits()
         self._load_catalog()
         view = self.bridge.latest(Events.RADIO_PARAMS)
         if isinstance(view, dict):
             self._apply_view(view)
+        # 定向一变就重画标签：别让下拉已选中、预览区"已定向"，标签还停在"当前未定向"。
+        self._sync_device_label()
         self.say(
             str(res.get("detail") or (f"已切换目标模块 {mac}" if mac else "已恢复自动选择"))
         )
+        return True
+
+    def _on_device_changed(self, _index: int = 0) -> None:
+        idx = self.combo_device.currentIndex()
+        if idx < 0:
+            return
+        self._select_target(str(self.combo_device.itemData(idx) or ""))
 
     def _load_catalog(self) -> None:
         svc = self.service("radio")
@@ -388,6 +440,7 @@ class RadioPage(BasePage):
         self.table.setRowCount(0)
         self._row_of.clear()
         self._kind_of.clear()
+        self._confirm_of.clear()
         self._editors.clear()
         current_group = None
         for row in rows:
@@ -412,8 +465,10 @@ class RadioPage(BasePage):
             self.table.setItem(table_row, _C_CUR, cur_item)
 
             rw = str(row.get("rw", "ro"))
-            self._kind_of[name] = self._row_action_kind(row, rw)
-            self.table.setCellWidget(table_row, _C_EDIT, self._make_editor(row, rw))
+            kind = self._row_action_kind(row, rw)
+            self._kind_of[name] = kind
+            self._confirm_of[name] = str(row.get("confirm", "") or "")
+            self.table.setCellWidget(table_row, _C_EDIT, self._make_editor(row, rw, kind))
 
             bound_item = QTableWidgetItem(str(row.get("bound", "")))
             bound_item.setForeground(_DIM_COLOR)
@@ -453,7 +508,7 @@ class RadioPage(BasePage):
             item.setFont(font)
             self.table.setItem(table_row, col, item)
 
-    def _make_editor(self, row: dict, rw: str) -> QWidget:
+    def _make_editor(self, row: dict, rw: str, kind: str) -> QWidget:
         name = str(row.get("name", ""))
         if rw == "ro":
             hold = QLineEdit()
@@ -461,22 +516,39 @@ class RadioPage(BasePage):
             hold.setEnabled(False)
             return hold
         options = list(row.get("options") or ())
+        field: QWidget
         if options:
             combo = QComboBox()
             combo.addItem("")
             for opt in options:
                 combo.addItem(str(opt))
             combo.setCurrentIndex(0)
-            self._editors[name] = combo
-            return combo
-        edit = QLineEdit()
-        edit.setFont(mono_font())
-        edit.setPlaceholderText("留空不发送")
-        unit = str(row.get("unit", "")).strip()
-        if unit:
-            edit.setToolTip(f"单位：{unit}")
-        self._editors[name] = edit
-        return edit
+            field = combo
+        else:
+            edit = QLineEdit()
+            edit.setFont(mono_font())
+            edit.setPlaceholderText("点“执行”下发" if kind == "action" else "留空不发送")
+            unit = str(row.get("unit", "")).strip()
+            if unit:
+                edit.setToolTip(f"单位：{unit}")
+            field = edit
+        self._editors[name] = field
+        if kind != "action":
+            return field
+        # 动作指令逐行手动执行：不随"下发修改"批量上线，危险动作先弹二次确认。
+        box = QWidget()
+        lay = QHBoxLayout(box)
+        lay.setContentsMargins(2, 0, 2, 0)
+        lay.setSpacing(4)
+        lay.addWidget(field, 1)
+        btn = QPushButton("执行")
+        danger = self._confirm_of.get(name, "")
+        btn.setToolTip(danger or f"单独执行 AT+{name}，不参与批量下发")
+        if danger:
+            btn.setStyleSheet(f"color:{_ERR_COLOR.name()}; font-weight:bold;")
+        btn.clicked.connect(lambda _checked=False, n=name: self._execute_action(n))
+        lay.addWidget(btn)
+        return box
 
     # ------------------------------------------------------------------ 值显示
     def _display(self, name: str, value: object) -> str:
@@ -521,25 +593,79 @@ class RadioPage(BasePage):
         self._tint_current(item, text)
         self.table.resizeRowToContents(row)
 
+    def _editor_text(self, name: str) -> str:
+        """取某行新值列当前填写的值；下拉首项（空）视为未填写。"""
+        widget = self._editors.get(name)
+        if isinstance(widget, QComboBox):
+            return widget.currentText().strip() if widget.currentIndex() > 0 else ""
+        if isinstance(widget, QLineEdit):
+            return widget.text().strip()
+        return ""
+
     def _collect_edits(self) -> list[tuple[str, str]]:
+        """批量下发用的普通参数行；只读行和动作行都不在这里。"""
         out: list[tuple[str, str]] = []
-        for name, widget in self._editors.items():
-            if self._kind_of.get(name) == "ro":
+        for name in self._editors:
+            if self._kind_of.get(name) != "write":
                 continue
-            if isinstance(widget, QComboBox):
-                if widget.currentIndex() <= 0:
-                    continue
-                out.append((name, widget.currentText()))
-            elif isinstance(widget, QLineEdit):
-                text = widget.text().strip()
-                if text:
-                    out.append((name, text))
+            text = self._editor_text(name)
+            if text:
+                out.append((name, text))
         return out
+
+    def _pending_actions(self) -> list[tuple[str, str]]:
+        """新值列填了值的动作行：只用于提示"这些不会随批量下发上线"。"""
+        out: list[tuple[str, str]] = []
+        for name in self._editors:
+            if self._kind_of.get(name) != "action":
+                continue
+            text = self._editor_text(name)
+            if text:
+                out.append((name, text))
+        return out
+
+    def _radio_target(self) -> dict:
+        """服务层口径的"这条指令会发给谁"——不是下拉框文本，而是传输层实际定向值。"""
+        svc = self.service("radio")
+        getter = getattr(svc, "target", None) if svc is not None else None
+        if not callable(getter):
+            return {"mac": "", "auto": True, "total": 0, "online": 0}
+        return dict(getter() or {})
+
+    def _target_label(self) -> str:
+        """给人看的当前目标：优先用传输层实际定向 MAC，其次回落到下拉选择。"""
+        t = self._radio_target()
+        mac = str(t.get("mac") or "")
+        if mac:
+            return f"{mac}（已定向）"
+        idx = self.combo_device.currentIndex()
+        if idx >= 0 and str(self.combo_device.itemData(idx) or ""):
+            return f"{self.combo_device.itemData(idx)}（待定向）"
+        return "自动（首个在线模块）" if t.get("auto", True) else "未选择目标模块"
+
+    def _require_target(self) -> bool:
+        """多模块在线时未手选一台就阻断读/写/动作：避免把指令发给"上一台"。"""
+        link = self.service("link")
+        if not self._device_support(link):
+            return True
+        idx = self.combo_device.currentIndex()
+        if idx >= 0 and str(self.combo_device.itemData(idx) or ""):
+            return True
+        if self._auto_allowed:
+            return True
+        self.say(
+            "发现多台在线模块：请先在“目标模块”下拉框选定一台，再读取/下发。"
+            "未选定时程序不会替你猜设备",
+            10000,
+        )
+        return False
 
     # ------------------------------------------------------------------ 动作
     def _on_read(self) -> None:
         svc = self.service("radio")
         if svc is None or self._read_worker is not None:
+            return
+        if not self._require_target():
             return
         self.btn_read.setEnabled(False)
         self.btn_read.setText("读取中…")
@@ -572,7 +698,8 @@ class RadioPage(BasePage):
                 self._set_current(name, err)
         detail = str(res.get("detail") or "")
         if res.get("ok"):
-            self.say(f"读取完成：{detail or f'{len(values)}/{len(values)} 项'}")
+            self.say(f"读取完成（目标：{self._target_label()}）："
+                     f"{detail or f'{len(values)}/{len(values)} 项'}")
             return
         link = self.service("link")
         if link is not None and not link.is_open:
@@ -648,9 +775,15 @@ class RadioPage(BasePage):
 
     def _on_preview(self) -> None:
         edits = self._collect_edits()
+        actions = self._pending_actions()
         if not edits:
-            self.preview_view.setPlainText("（新值列留空即不发送，预览为空）")
-            self.say("没有待预览的修改")
+            note = "（新值列留空即不发送，预览为空）"
+            if actions:
+                note += "\n动作指令不参与批量下发，请在该行点“执行”：" + "、".join(
+                    n for n, _ in actions
+                )
+            self.preview_view.setPlainText(note)
+            self.say("没有待预览的修改" if not actions else "填的是动作指令，请点该行的“执行”")
             return
         bad: list[str] = []
         good: list[str] = []
@@ -662,8 +795,15 @@ class RadioPage(BasePage):
             spec = registry.spec_for(name)
             wire = spec.wire_name if spec is not None else name.upper()
             good.append(format_at(wire, value if value else None))
-        head = f"—— 计划下发 {len(good)} 条 ——" if good else "—— 无可下发项 ——"
-        self.preview_view.setPlainText("\n".join(bad + [head] + good))
+        head = f"—— 计划下发 {len(good)} 条（目标：{self._target_label()}）——"
+        if not good:
+            head = "—— 无可下发项 ——"
+        lines = bad + [head] + good
+        if actions:
+            lines.append(
+                "—— 动作指令不在此列，需逐行点“执行”：" + "、".join(n for n, _ in actions) + " ——"
+            )
+        self.preview_view.setPlainText("\n".join(lines))
         if bad:
             self.say(f"预览：{len(bad)} 项校验失败，修正后才能下发", 8000)
         else:
@@ -673,28 +813,89 @@ class RadioPage(BasePage):
         svc = self.service("radio")
         if svc is None:
             return
-        edits = self._collect_edits()
-        if not edits:
-            self.say("没有待下发的修改（新值列留空即不发送）")
+        if not self._require_target():
             return
-        lines: list[str] = []
+        edits = self._collect_edits()
+        actions = self._pending_actions()
+        if not edits:
+            self.say(
+                "没有待下发的修改（新值列留空即不发送）"
+                if not actions
+                else f"动作指令 {len(actions)} 项不参与批量下发，请点该行“执行”"
+            )
+            return
+        lines: list[str] = [f"—— 目标：{self._target_label()} ——"]
         ok_n = 0
+        noop_n = 0
         for name, text in edits:
-            if self._kind_of.get(name) == "action":
-                res = svc.action(name, text)
-            else:
-                res = svc.write(name, text)
+            res = svc.write(name, text)
             ok = bool(res.get("ok"))
             if ok:
                 ok_n += 1
                 self._set_current(name, text)
+            else:
+                # "回了 OK 但值没生效"：当前值列必须显示模块里真正读到的值，
+                # 否则界面会继续骗人。
+                if res.get("verified") is False:
+                    noop_n += 1
+                    got = res.get("readback")
+                    self._set_current(name, self._display(name, got) if got is not None else text)
             detail = str(res.get("detail") or res.get("error") or "")
             lines.append(f"{'OK ' if ok else 'FAIL'} {name}={text}  {detail}")
+        if actions:
+            lines.append(
+                f"—— 已跳过动作指令 {len(actions)} 项（{ '、'.join(n for n, _ in actions)}）："
+                '需要时逐行点"执行" ——'
+            )
         self.preview_view.setPlainText("\n".join(lines))
+        skip = f"，另跳过动作指令 {len(actions)} 项（需逐行点“执行”）" if actions else ""
         if ok_n == len(edits):
-            self.say(f"下发完成 {ok_n}/{len(edits)}")
+            self.say(f"下发完成 {ok_n}/{len(edits)}{skip}", 8000 if skip else 5000)
+        elif noop_n:
+            self.say(
+                f"下发 {ok_n}/{len(edits)} 生效；{noop_n} 项模块回了 OK 但回读值没变，"
+                "当前值列已按真实读值显示，详见预览区",
+                12000,
+            )
         else:
-            self.say(f"下发 {ok_n}/{len(edits)} 成功，失败项见预览区", 8000)
+            self.say(f"下发 {ok_n}/{len(edits)} 成功，失败项见预览区{skip}", 8000)
+
+    def _execute_action(self, name: str) -> None:
+        """单条动作指令：取值 → 危险项弹确认 → 经服务层 action() 下发。"""
+        svc = self.service("radio")
+        if svc is None:
+            return
+        if not self._require_target():
+            return
+        text = self._editor_text(name)
+        if not text:
+            self.say(f"{name} 需要先填写执行参数（选值或输入值）", 8000)
+            return
+        danger = self._confirm_of.get(name, "")
+        if danger:
+            spec = registry.spec_for(name)
+            wire = spec.wire_name if spec is not None else name.upper()
+            ret = QMessageBox.question(
+                self,
+                f"确认执行 {name}？",
+                f"目标模块：{self._target_label()}\n"
+                f"指令：AT+{wire}={text}\n\n{danger}",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if ret != QMessageBox.Yes:
+                self.say(f"已取消 {name}，未向模块下发")
+                return
+        res = dict(svc.action(name, text, confirmed=True) or {})
+        ok = bool(res.get("ok"))
+        detail = str(res.get("detail") or res.get("error") or "")
+        self.preview_view.setPlainText(f"{'OK ' if ok else 'FAIL'} {name}={text}  {detail}")
+        if res.get("need_confirm"):
+            self.say(f"{name} 被服务层拦下：{detail}", 10000)
+        elif ok:
+            self.say(f"动作 {name}={text} 已执行：{detail}")
+        else:
+            self.say(f"动作 {name} 执行失败：{detail}", 10000)
 
     def _on_clear_edits(self) -> None:
         for widget in self._editors.values():
@@ -711,7 +912,7 @@ class RadioPage(BasePage):
         res = svc.load_defaults()
         self._load_catalog()
         if res.get("ok"):
-            self.say("已恢复本地参数副本为出厂默认（未下发到模块）")
+            self.say("已清空本机参数缓存，当前值列待重新读取（未向模块下发任何指令）")
         else:
             self.say(f"恢复默认失败：{res.get('detail', '')}", 8000)
 

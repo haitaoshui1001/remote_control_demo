@@ -50,7 +50,7 @@ at:
   fallback_channel: ''
   line_ending: crlf
   timeout_ms: 1500
-  retries: 2
+  retries: 1
   ok_tokens:
   - OK
   err_tokens:
@@ -137,10 +137,6 @@ motion:
   enabled: true
   max_linear_speed: 1.0
   max_angular_speed: 0.5
-  linear_accel: 0.5
-  linear_decel: 0.8
-  angular_accel: 0.3
-  angular_decel: 0.5
   send_period_ms: 100
   stop_on_focus_loss: true
   frame_protocol: wheeltec
