@@ -79,7 +79,7 @@ figure.mmd figcaption{font-family:"SimHei","黑体",sans-serif;font-size:13.5px;
 <div class="layout">
 <aside id="toc">
   <div class="brand">EWD611 上位机 · 设计报告</div>
-  <div class="sub">v1.6 · 2026-10-10（新增摄像头编码参数 ONVIF 远程配置；PyInstaller 免装环境 exe 打包交付；冻结包 XML 解析器故障复盘；回归基线 725 条）· 点击目录可跳转</div>
+  <div class="sub">v1.7 · 2026-10-14（在 v1.6 的 ONVIF 编码远程配置之上，新增摄像头连接参数的界面配置与 RTSP/ONVIF 连通性自检、声明编码与真实编码的分离与写入保护、取流地址"生效地址单一口径"；真机密码不入库；回归基线 750 条）· 点击目录可跳转</div>
   <div class="btnrow">
     <button class="btn pri" onclick="downloadSelf()">⬇ 下载本页</button>
     <a class="btn" href="./EWD611上位机文档包.zip" download>🗜 文档打包下载</a>
@@ -91,7 +91,7 @@ figure.mmd figcaption{font-family:"SimHei","黑体",sans-serif;font-size:13.5px;
 <main class="main">
 <div class="doc-head">
   <h1>EWD611-868NW33 数传图传模块上位机控制软件<br>设计与实现报告</h1>
-  <div class="meta">项目代号：remote_demo ｜ 版本：v1.6 ｜ 日期：2026-10-10（在 v1.5 的遥测状态栏、运动控制、视频降延迟与取流切换之上，本版新增：摄像头分辨率/帧率/码率的 ONVIF 远程配置子系统（见 4.9）；PyInstaller onedir 免装环境 exe 打包交付路径（见 7）；冻结包内 XML 解析器缺失导致"摄像头参数读不到"的故障复盘（见 5.8）；回归基线 725 条）｜ 配套文档：《操作部署手册》</div>
+  <div class="meta">项目代号：remote_demo ｜ 版本：v1.7 ｜ 日期：2026-10-14（在 v1.5 的遥测状态栏、运动控制、视频降延迟与取流切换、v1.6 的 ONVIF 编码远程配置（见 4.9）与 exe 打包交付（见 7）之上，本版新增：摄像头 IP/端口/账号/密码/取流路径的界面配置与【测试】连通性自检（见 4.10）；厂商私有 JSON 暴露的"声明编码 H264、真实编码 H265"及其写入保护（见 5.9）；预览/自检/取流三处同源的"生效地址单一口径"（见 5.10）；仓库配置脱敏，真机密码不入库；回归基线 750 条）｜ 配套文档：《操作部署手册》</div>
 </div>
 
 <h2>1 项目概述</h2>
@@ -119,7 +119,8 @@ flowchart LR
 <table>
 <tr><th>用户需求</th><th>落地模块</th><th>交付状态</th></tr>
 <tr><td>显示图像</td><td><code>services/video.py</code> + 视频页</td><td>RTSP 子码流解码显示（TCP/UDP 可切换）、降延迟跳帧、录制、抓图，已交付</td></tr>
-<tr><td>远程配置摄像头的帧率、分辨率、码率</td><td><code>protocol/onvif.py</code> + <code>services/camera_config.py</code> + 视频页"摄像头参数"弹窗</td><td>标准库手写 ONVIF（WS-Security 摘要认证）读写编码配置，合法值域取设备自报 Options，写入后自动重启取流生效，已交付（见 4.9）</td></tr>
+<tr><td>远程配置摄像头的帧率、分辨率、码率</td><td><code>protocol/onvif.py</code> + <code>services/camera_config.py</code> + 视频页"摄像头参数"弹窗</td><td>标准库手写 ONVIF（WS-Security 摘要认证）读写编码配置，合法值域取设备自报 Options，写入后自动重启取流生效；设备私有字段报出的真实编码（H265）如实回显并锁定编码项，已交付（见 4.9、5.9）</td></tr>
+<tr><td>推流地址、端口、IP、密码怎么设——界面设置还是自动探测</td><td><code>services/camera_config.py</code> + <code>ui/widgets/camera_conn_dialog.py</code> + <code>core/config.py</code></td><td>视频页"摄像头连接…"弹窗界面配置 IP/RTSP 端口/ONVIF 端口/账号/密码/主子码流路径，【测试】对 RTSP 与 ONVIF 双通道分别探测并区分四类故障，【保存】写回 yaml 并热重连，预览/自检/取流三处共用同一生效地址口径；自动发现（WS-Discovery）按范围裁剪未做，已交付（见 4.10、5.10）</td></tr>
 <tr><td>485 透传控制指令</td><td><code>protocol/passthrough.py</code> + 控制台页 + 数据页</td><td>Hex/ASCII 双向透传、模板库、CRC16 自动追加，已交付</td></tr>
 <tr><td>配置图传模块参数并显示对端数据</td><td><code>protocol/param_registry.py</code> + <code>services/radio.py</code> + 电台配置页</td><td>28 条参数注册表、读取/编辑/预览/下发，已交付</td></tr>
 <tr><td>显示信道关键参数</td><td><code>services/link.py</code> + 信道监控页</td><td>RSSI/EVM 历史曲线、链路快照、STA 列表，已交付</td></tr>
@@ -139,7 +140,7 @@ flowchart LR
 <tr><td>解耦合</td><td>层与层、服务与界面互不直连</td><td>事件总线发布订阅 + UI 桥单点投递，服务层零 PyQt5 依赖</td></tr>
 <tr><td>可靠性</td><td>无硬件/断线时界面可用并明确降级</td><td>全服务返回结构化结果不抛裸异常；页面降级态；自动重连</td></tr>
 <tr><td>实时性</td><td>视频低延迟、指令即时回显</td><td>解码线程 + 帧率上限丢帧；AT 超时 1500ms 可重试；总线合并投递</td></tr>
-<tr><td>可测试性</td><td>CI 可离线运行</td><td>mock 传输/电台/视频源；QT_QPA_PLATFORM=offscreen；725 条 pytest</td></tr>
+<tr><td>可测试性</td><td>CI 可离线运行</td><td>mock 传输/电台/视频源；QT_QPA_PLATFORM=offscreen；750 条 pytest</td></tr>
 <tr><td>可维护性</td><td>参数变更集中管理</td><td>参数注册表为唯一真源，表单/校验/编解码同源派生</td></tr>
 <tr><td>可交付性</td><td>目标机不装 Python 也能运行</td><td>PyInstaller onedir 冻结包（解释器 + 依赖 + 资源自包含），配置与数据目录外置可改，启动自检落日志（见 7）</td></tr>
 </table>
@@ -209,7 +210,7 @@ flowchart TB
 <h3>3.2 模块清单</h3>
 <table>
 <tr><th>包</th><th>模块</th><th>职责</th></tr>
-<tr><td rowspan="5">core</td><td><code>config.py</code></td><td>YAML 八段配置装载、点号路径覆盖、类型强制与校验告警</td></tr>
+<tr><td rowspan="5">core</td><td><code>config.py</code></td><td>YAML 八段配置装载、点号路径覆盖、类型强制与校验告警；<code>VideoCfg</code> 承载连接参数（IP/端口/账号/密码/主·子码流路径/码流档/URL 模板）并提供 <code>composed_url()</code> 与 <code>resolved_url()</code> 两级地址口径（见 5.10）</td></tr>
 <tr><td><code>events.py</code></td><td>线程安全发布订阅总线，主题常量与流/合并两种投递语义</td></tr>
 <tr><td><code>models.py</code></td><td>AtExchange / LinkSnapshot / StaInfo / AlarmEvent 等数据类</td></tr>
 <tr><td><code>logger.py</code></td><td>控制台与滚动文件日志装配</td></tr>
@@ -234,13 +235,14 @@ flowchart TB
 <tr><td><code>record.py</code></td><td>AT 日志、事件日志、字节流、链路 CSV、录像与抓图</td></tr>
 <tr><td><code>telemetry.py</code></td><td>机器人遥测旁路解析、节流发布、新鲜度与边沿告警、里程与 CSV 落盘</td></tr>
 <tr><td><code>motion.py</code></td><td>方向运动控制：vx/vr 双通道斜坡、限幅、周期重发与停止帧补发</td></tr>
-<tr><td><code>camera_config.py</code></td><td>摄像头编码参数读/写门面：工作线程执行 ONVIF、结果发布 <code>camera/config</code>、同一时刻只允许一个在途动作、任何异常都落成可读结果</td></tr>
-<tr><td rowspan="6">ui</td><td><code>main_window.py</code></td><td>页签装配、状态栏、退出确认</td></tr>
+<tr><td><code>camera_config.py</code></td><td>摄像头参数门面：编码参数读/写在工作线程执行 ONVIF、结果发布 <code>camera/config</code>、同一时刻只允许一个在途动作、任何异常都落成可读结果；连接参数侧提供 RTSP 明文探测（OPTIONS→DESCRIBE，按四类故障分别给文案）、ONVIF 可达性探测、<code>apply_connection()</code> 白名单回写并热重连，结果发布 <code>camera/probe</code></td></tr>
+<tr><td rowspan="7">ui</td><td><code>main_window.py</code></td><td>页签装配、状态栏、退出确认</td></tr>
 <tr><td><code>bridge.py</code></td><td>UiBridge：总线的 Qt 侧批量投递器</td></tr>
 <tr><td><code>pages/*</code></td><td>BasePage 契约与六个功能页</td></tr>
 <tr><td><code>widgets/telemetry_bar.py</code></td><td>视频页底部遥测状态栏（数字格 + 迷你曲线 + 导出）</td></tr>
 <tr><td><code>widgets/motion_pad.py</code></td><td>视频页十字方向盘（四方向按钮 + 目标/当前速度读数 + 停用降级态）</td></tr>
-<tr><td><code>widgets/camera_dialog.py</code></td><td>视频页"摄像头参数"弹窗：码流档选择、当前值与值域联动下拉、读取/写入按钮态与结果回显</td></tr>
+<tr><td><code>widgets/camera_dialog.py</code></td><td>视频页"摄像头参数"弹窗：码流档选择、当前值与值域联动下拉、读取/写入按钮态与结果回显、编码项按设备真值只读锁定</td></tr>
+<tr><td><code>widgets/camera_conn_dialog.py</code></td><td>视频页"摄像头连接…"弹窗：IP/RTSP 端口/ONVIF 端口/账号/密码/主·子码流路径/码流档/传输方式/手填 URL 的编辑、地址实时预览、【测试】两行探测结果回显、【保存】白名单回写与热重连、【恢复当前配置】</td></tr>
 <tr><td>mock / cli</td><td><code>radio.py</code> <code>video.py</code>；<code>cli/main.py</code></td><td>仿真电台与视频源；五个子命令与参数解析</td></tr>
 <tr><td>冻结包入口</td><td><code>entry_gui.py</code> + <code>EWD611-HMI.spec</code></td><td>exe 版唯一入口：切工作目录、<code>EWD611_HOME</code> 重定向、启动自检写 <code>logs/startup.log</code>、崩溃落 <code>crash.log</code>；spec 定义 onedir 打包与依赖收集纠偏（见 7）</td></tr>
 </table>
@@ -268,11 +270,12 @@ flowchart LR
 <tr><td><code>robot/telemetry</code></td><td>dict（sample/stale/age_s）</td><td>合并 COALESCED</td><td>视频页遥测状态栏</td></tr>
 <tr><td><code>robot/motion</code></td><td>dict（vx/vr/target/held/moving/sent_frames 快照）</td><td>合并 COALESCED</td><td>视频页方向盘回显（MotionPad）</td></tr>
 <tr><td><code>camera/config</code></td><td>CameraParams 数据类（ok/action/stream/current/options/error）</td><td>合并 COALESCED</td><td>视频页"摄像头参数"弹窗回显</td></tr>
+<tr><td><code>camera/probe</code></td><td>CameraProbe 数据类（target/kind/ok/detail/auth_mode/elapsed_ms）</td><td>合并 COALESCED</td><td>视频页"摄像头连接…"弹窗的【测试】两行结果</td></tr>
 </table>
-<p>主题划分遵循两个判据：值只关心最新的（遥测快照、参数视图）用合并语义，避免 UI 被旧值刷屏；每条都必须留痕的（AT 事务、告警、日志）用流语义，整批交付不丢条。这一区别由 UiBridge 的投递策略保证，页面侧无需感知。摄像头参数也归入合并语义：弹窗同一时刻只显示"最后一次读/写动作"的结果，网络慢时迟到的旧结果继续刷屏反而误导。</p>
+<p>主题划分遵循两个判据：值只关心最新的（遥测快照、参数视图）用合并语义，避免 UI 被旧值刷屏；每条都必须留痕的（AT 事务、告警、日志）用流语义，整批交付不丢条。这一区别由 UiBridge 的投递策略保证，页面侧无需感知。摄像头参数也归入合并语义：弹窗同一时刻只显示"最后一次读/写动作"或"最后一次测试"的结果，网络慢时迟到的旧结果继续刷屏反而误导。连通性自检走 <code>camera/probe</code> 而非直接返回值，是为了让秒级的 RTSP/ONVIF 探测不阻塞 Qt 主线程，同时对话框只需订阅一个主题即可刷新两行结果（见 4.10）。</p>
 
 <h3>3.4 线程模型</h3>
-<p>共五类线程：（1）Qt 主线程，仅 UiBridge 的 QTimer 把总线数据投递给页面；（2）LinkMonitor 轮询线程，按 <code>link.poll_interval_s</code>（默认 3s）驱动 AT 读序列并发布快照；（3）串口/UDP 收发线程，负责按空闲间隔切帧；（4）RTSP 解码线程，出帧经帧率上限（默认 25fps）与迟到丢帧后送视频页；（5）camera-config 工作线程，由读/写动作按需拉起（非常驻），在空口桥上的秒级 SOAP 往返全部关在这条线程里，跑完即结束并把结果投回总线。服务层与协议层完全不知道 Qt 的存在，全部跨线程交互收口在总线与桥两处，保证 offscreen 测试可以脱离界面直接驱动总线。</p>
+<p>共五类线程：（1）Qt 主线程，仅 UiBridge 的 QTimer 把总线数据投递给页面；（2）LinkMonitor 轮询线程，按 <code>link.poll_interval_s</code>（默认 3s）驱动 AT 读序列并发布快照；（3）串口/UDP 收发线程，负责按空闲间隔切帧；（4）RTSP 解码线程，出帧经帧率上限（默认 25fps）与迟到丢帧后送视频页；（5）camera-config 工作线程，由编码参数的读/写动作与连接参数的【测试】探测按需拉起（非常驻），在空口桥上的秒级 SOAP 往返全部关在这条线程里，跑完即结束并把结果投回总线。服务层与协议层完全不知道 Qt 的存在，全部跨线程交互收口在总线与桥两处，保证 offscreen 测试可以脱离界面直接驱动总线。</p>
 
 <h3>3.5 关键设计决策</h3>
 <table>
@@ -286,6 +289,9 @@ flowchart LR
 <tr><td>合法值域只信设备自报 Options，写入前 <code>clamped()</code></td><td>不同固件支持的分辨率/帧率/码率档位差异大，界面写死列表必然出现"显示成功但设备拒收"</td><td>下拉项随读取结果动态生成 → 读失败时表单只读并给出原因，避免提交空值域</td></tr>
 <tr><td>跨空口的 ONVIF 调用放按需工作线程 + 单在途</td><td>请求穿 868MHz 桥可达秒级，同步执行会冻结整窗；并发两个 SOAP 会让设备返回错乱</td><td>需处理"忙"态与迟到结果 → 忙时拒绝新动作并置灰按钮，结果统一经 <code>camera/config</code> 合并投递</td></tr>
 <tr><td>源码与 exe 双入口分离（run.py / entry_gui.py）</td><td>开发态要能改配置、跑 pytest；交付态要自包含、免装环境、异常留痕</td><td>两个入口需各自维护 → 冻结入口只做"定位目录 + 自检 + 转调 run_app"，业务代码零分叉</td></tr>
+<tr><td>取流地址只允许一个生成函数（<code>composed_url</code>→<code>resolved_url</code>）</td><td>预览、自检、实际取流三处若各拼一次，就会出现"自检 √ 但没画面"的假阳性，排查成本极高</td><td>手填 URL 与拼装规则存在优先级 → 固定为"手填 url 优先 → 路径拼装 → 模板"，并在对话框实时回显最终生效地址</td></tr>
+<tr><td>真实编码只回显、不回写（不逆向厂商私有 JSON 写协议）</td><td>私有字段是转义 JSON 且无公开写接口，猜着写会把设备配置改坏且无法验证；如实显示 + 锁定编码项对用户已经够用</td><td>用户无法在界面改编码 → 状态行写明来源与"已锁定"，需要改编码时回设备自带 APP/网页端</td></tr>
+<tr><td>真机凭据不入库（仓库 <code>config/app.yaml</code> 的 password 与含凭据 url 留空）</td><td>仓库为公开远端，明文密码即泄露；连接参数支持界面填一次保存后自动写回本地文件，无需入库</td><td>新克隆后首次取流需手动填密码 → 留空时地址按 IP/端口/账号/路径自动拼装，密码回显与日志一律脱敏</td></tr>
 </table>
 
 <h2>4 子系统详细设计</h2>
@@ -477,6 +483,65 @@ sequenceDiagram
 <p><b>值域永远来自设备</b>。读取一次拿到的是"当前值 + 该档支持的取值集合"（<code>EncoderOptions</code>：编码格式、每种格式下的分辨率清单、帧率档、码率范围），弹窗四个控件的候选项按此动态生成，切换编码格式会连带重算分辨率清单并尽量保留原选项；写入前再走一遍 <code>EncoderSettings.clamped(options)</code>，把越界的帧率/码率夹进合法范围，返回值里的 <code>fixed</code> 记录被修正了哪几项并直接显示给用户——界面回显的是"设备答应的值"，不是"用户填的值"，从根上消除"提示成功、重读又变回去"这类假象。<b>码率控制</b>一项刻意做成只回显不可改：实机走 Media1，写入报文里本就不区分恒定/可变码率，改它不会生效，与其让用户误以为改了，不如禁用并写明"码率高低由目标码率决定"。</p>
 <p><b>认证与服务发现都留了回退</b>。默认在 SOAP 头里带 WS-Security <code>PasswordDigest</code>（Nonce + Created + SHA1 摘要）；若设备回了 401 且挑战头是 <code>digest</code>，自动改用 HTTP Digest 重试一次，实际生效的方式记在 <code>auth_mode</code> 并随结果回显到界面。媒体服务地址先向 <code>GetServices</code> 询问，并从返回的多个 XAddr 里<b>挑中 Media1</b> 那个（实机同时报 media 与 media2，本客户端发的是 Media1 动作，挑错在严格固件上直接 Fault）；问不到则按常见路径 <code>/onvif/media_service</code> 猜。所有网络与协议层失败统一翻译成 <code>OnvifError</code>，再由服务落成 <code>CameraParams(ok=False, error=…)</code>——弹窗显示具体原因并把表单置回只读，不会留下"按钮点下去没反应"的空白态。</p>
 <p><b>并发与安全边界</b>：服务同一时刻只允许一个在途动作（<code>busy</code> 由线程存活判定），忙时按钮置灰显示"读取中…/写入中…"，杜绝并发 SOAP 让设备返回错乱；写入成功后调用 <code>video.restart()</code> 用同样的地址重新拉流，新参数当场可见，重启失败只记告警<b>不回滚</b>已写入的配置（设备侧已生效，回滚反而制造两边不一致）。服务不持有任何 Qt 对象，结果只经合并主题 <code>camera/config</code> 投递，因此协议层与服务层测试全部可以在 offscreen 下用假客户端驱动，覆盖读成功、值域过滤、设备 Fault、越界码流序号、异常必回总线等路径；界面侧只测"弹窗按结果填控件"这一层映射。</p>
+<p>本节的编码下拉在实机上暴露出"标准字段说 H264、设备实际跑 H265"的不一致，处理口径（如实回显 + 编码项锁定 + 写回仍用声明值）单独写在 5.9；连接参数（IP/端口/账号/密码/路径）如何在界面配置与自检写在 4.10。</p>
+
+<h3>4.10 摄像头连接参数界面配置与连通性自检</h3>
+<p><b>解决的问题</b>：取流地址里的 IP、RTSP 端口、账号、密码、推流路径原先只能改 <code>app.yaml</code>，现场接一台新摄像头要走"改文件—重启—盯黑屏"的循环；更糟的是密码错、路径不存在、端口不对三种故障在界面上表现完全相同（一片黑 + 一行"未出帧"），没有可执行的下一步。现在补一个<b>摄像头连接</b>对话框：参数在界面上填，填完就地自检，确认能通了再保存并热重连。<b>自动发现（WS-Discovery）未实现</b>——IP 与 ONVIF 端口靠对话框填，RTSP 端口按 554 预设，密码任何时候都不尝试自动获取。</p>
+<p><b>入口与实例管理</b>：视频页工具条【摄像头连接…】（<code>video_page.py:138</code>）打开单例对话框（<code>_conn_dialog</code>，关闭不销毁、重复点击只置顶），并把 <code>on_saved=self._sync_buttons</code> 传进去，保存成功后主/子码流按钮文案立刻同步。对话框控件与配置字段一一对应：</p>
+<table>
+<tr><th>界面控件</th><th>写入字段</th><th>要点</th></tr>
+<tr><td>摄像头 IP / RTSP 端口 / ONVIF 端口</td><td><code>camera_ip</code> / <code>rtsp_port</code> / <code>onvif_port</code></td><td>两个端口分属两个服务，不可互相推断；TP-Link 实测 ONVIF 走 80、RTSP 走 554</td></tr>
+<tr><td>取流账号 / 密码（可切明文回显）</td><td><code>user</code> / <code>password</code></td><td>打开即回显当前密码，改错能立刻看出来；密码只落本机 <code>app.yaml</code>，不入库</td></tr>
+<tr><td>主码流路径 / 子码流路径</td><td><code>stream_paths[0]</code> / <code>stream_paths[1]</code></td><td>设备自报路径（TP-Link 为 <code>stream1</code> / <code>stream2</code>），填好后主/子码流切换即生效</td></tr>
+<tr><td>当前码流 / 取流传输</td><td><code>stream_index</code> / <code>transport</code></td><td>档位一换，下方"生效地址"与取流地址同步换档</td></tr>
+<tr><td>手填取流地址（留空自动拼装）</td><td><code>url</code></td><td>非空时整条优先，用于路径含 query 的异构设备；清空即回自动拼装</td></tr>
+<tr><td>生效地址（只读灰底）</td><td>—</td><td>实时渲染 <code>snap.resolved_url(idx)</code>，tooltip 标明"手填地址生效"还是"按 IP/端口/路径自动拼装"</td></tr>
+</table>
+<p><b>副本语义</b>：对话框构造时 <code>copy.deepcopy(cfg.video)</code> 出一份 detached snapshot，所有编辑只改副本；【恢复当前配置】从真实配置重灌（<code>_load_widgets()</code> 读的是 <code>camera.cfg.video</code> 而非构造快照，这样命令行或另一个弹窗改过配置后"当前配置"仍然准确）。因此关窗口即丢弃、不保存就不影响取流，避免"随手点两下就把正在跑的视频搞断"。</p>
+<p><b>生效地址单一口径</b>：对话框预览、【测试】自检、实际取流三处必须走同一个 <code>VideoCfg.resolved_url(idx)</code>，否则会出现"测通了却没画面"这类无法解释的现象。地址拼装规则收在 <code>VideoCfg.composed_url()</code>（<code>config.py:91</code>）：用户名与密码都非空才写凭据段（<code>rtsp://admin:@ip</code> 只会换来 401，反而看不出是密码没填），密码里的 <code>@</code> <code>:</code> 做 URL 转义；<code>camera_config.compose_rtsp_url()</code> 退化为薄封装转调它，全仓不再存在第二套拼法（见 5.10）。</p>
+<p><b>【测试】异步自检</b>：<code>probe_async()</code> 把工作线程跑的两项探测结果投到独立主题 <code>camera/probe</code>，与参数弹窗用的 <code>camera/config</code> 分账，互不污染。RTSP 侧用明文 TCP 请求 <code>OPTIONS → DESCRIBE</code>（<code>camera_config.py:184</code>）而不是"让 PyAV 试开一次"——解码器一开就是几秒缓冲，还会和正在跑的取流线程抢连接，而两条明文请求已足够把四类真实故障分开：</p>
+<table>
+<tr><th>探测现象</th><th>判定为</th><th>界面回显（原文）</th></tr>
+<tr><td>TCP 连接抛 OSError</td><td>IP 或端口不通</td><td><code>RTSP 端口连不上（ip:port，…）：核对 IP、RTSP 端口，或摄像头是否在线</code></td></tr>
+<tr><td>连上但无响应行</td><td>端口上没有 RTSP 服务</td><td><code>ip:port 能连上但没应答：那上面可能不是 RTSP 服务</code></td></tr>
+<tr><td>OPTIONS 回 401 / 403</td><td>账号或密码错</td><td><code>OPTIONS 回 401：账号或密码不对（当前账号 admin）</code></td></tr>
+<tr><td>DESCRIBE 回 404</td><td>推流路径不存在</td><td><code>DESCRIBE 回 404：推流路径不存在，核对主/子码流路径（如 stream1/stream2）</code></td></tr>
+<tr><td>DESCRIBE 回 200</td><td>可取流</td><td><code>DESCRIBE 正常：视频 1 路，1920x1080@25fps</code>（分辨率与帧率取自 SDP）</td></tr>
+</table>
+<p>ONVIF 侧另做一项独立判定：调 <code>GetDeviceInformation</code>，成功回显"厂商 / 型号 / 序列号"与认证方式（wsse / digest / none），失败只说明"ONVIF 不可用"而不否定取流——两者互不依赖，取流能通而 ONVIF 关着是完全正常的现场状态。忙时【测试】置灰显示"自检中…"，IP 与手填地址都为空时直接拒绝并发一条空地址提示，不放线程。</p>
+<p><b>【保存】回写与热重连</b>：<code>apply_connection()</code>（<code>camera_config.py:383</code>）按<b>字段白名单</b> <code>_CONN_FIELDS</code> 逐名写回真实 <code>VideoCfg</code>（空 IP 拒绝），再 <code>cfg.save()</code> 落盘 <code>app.yaml</code> 的 <code>video</code> 段，最后调 <code>video.set_stream(idx, persist=False)</code> 用新地址重建取流会话——档位已由本次保存落盘，不重复写。白名单的意义在于<b>渲染参数不得被连接参数覆盖</b>：<code>buffer_ms</code>、<code>render_fps_limit</code> 一类字段若整段覆盖，用户在别处调好的放帧策略会莫名回到默认值。保存成功后对话框把副本基线对齐真实配置并刷新预览，失败则保留输入让用户改。</p>
+<figure class="mmd"><figcaption>图 4-7 连接对话框的探测—保存—热重连时序</figcaption>
+<div class="mmd-toolbar"><span class="mmd-btns"></span></div>
+<div class="mmd-stage"><pre class="mermaid">
+sequenceDiagram
+    participant U as 用户
+    participant D as CameraConnDialog
+    participant S as CameraConfigService
+    participant W as 工作线程
+    participant B as 事件总线+桥
+    participant C as 摄像头
+    participant V as VideoService
+    U->>D: 改副本 deepcopy 后编辑
+    D->>D: 生效地址预览 resolved_url idx
+    U->>D: 测试 未保存的参数
+    D->>S: probe_async snapshot idx
+    S->>W: 起线程 单在途置忙
+    W->>C: RTSP OPTIONS 与 DESCRIBE
+    C-->>W: 200 SDP 或 401 404
+    W->>C: ONVIF GetDeviceInformation
+    C-->>W: 厂商 型号 序列号
+    W-->>B: publish camera/probe
+    B-->>D: slot_updated 两行 对错
+    U->>D: 保存
+    D->>S: apply_connection snapshot
+    S->>S: 白名单回写 cfg.save
+    S->>V: set_stream idx persist False
+    V->>C: 用新地址重建取流会话
+    S-->>D: ok detail
+    D->>D: 基线对齐 预览刷新 on_saved
+</pre></div>
+<div class="mmd-note">【测试】用的始终是副本：用户不必"先保存再试"，试错过程中一次落盘都没有；只有点【保存】才写 <code>app.yaml</code> 并重建取流会话。整条链路只允许一条线程在途，重复点击先被按钮置灰挡住，程序化入口再由 <code>_on_test()</code> 的忙标志兜第二道。</div>
+</figure>
 
 <h2>5 关键技术与难点</h2>
 
@@ -526,28 +591,69 @@ flowchart TD
 <p>自检探针的处置策略是<b>只记不拦</b>：expat 解析失败会在 <code>logs/startup.log</code> 写明 <code>xml expat parse: FAIL …（摄像头参数读取不可用）</code>，但<b>不</b>计入致命问题、不阻止程序启动。理由是本项目的主要功能——视频显示、485 透传与运动控制——完全不依赖 XML 解析，因为一个只影响摄像头远程配置的组件缺失而拒绝开机，会把可正常使用的功能一起赔进去；相比之下，"能开机 + 明确知道自己少了什么"对现场更友好。同类取舍在本项目还有两处：ONVIF 端口配错只影响参数读写不影响取流，机器人遥测解析失败只旁路计数不吞透传数据（见 5.5）。</p>
 <p>本次修复的验证是三段式的：构建日志出现 <code>[spec] libexpat.dll pinned to …\Library\bin\libexpat.dll</code>；核对冻结包 <code>_internal\libexpat.dll</code> 尺寸为 286536；在该包启动后的 <code>logs/startup.log</code> 读到 <code>xml expat parse: OK</code>。回归侧新增 4 条用例（协议层"解析器缺失必须翻译成 OnvifError"、服务层"读/写遇非协议异常必须落成结果"、"工作线程炸了也必须回总线"），保证这条静默路径不会随后续改动重新打开。</p>
 
+<h3>5.9 声明编码与真实编码不一致：厂商私有 JSON 与写入保护</h3>
+<p><b>现象与初判</b>：实机（TL-IPC341P-W2.8）点开"摄像头参数"的编码下拉，只看到 <code>H264</code> 一项，第一反应是"下拉太窄，H265 被截断没显示"。宽度这一条先排除：<code>QComboBox</code> 设为 <code>AdjustToContents</code> 且 <code>setMinimumContentsLength(12)</code>（<code>camera_dialog.py:106</code>），下拉展开宽度按最长项自适应，截断不可能吞掉整项。真因在设备响应里——<code>GetVideoEncoderConfiguration</code> 的标准字段 <code>tt:Encoding</code> <b>恒为 H264</b>，<code>GetVideoEncoderConfigurationOptions</code> 也只给 H264 的值域块，标准数据模型里根本没有 H265 这件事。</p>
+<p><b>私有字段的定位</b>：抓原始 SOAP 响应比对，TP-Link 把真实配置挂在 <code>trt:Configuration</code> 元素的 <code>anyAttribute</code> <b>属性</b>上，是一段转义 JSON（形如 <code>{"video":{"main":{...}},"error_code":0}</code>），本路码流的字典按编码 token 分组、token 对不上退回首项（<code>onvif.py:_private_video</code>）。其中 <code>encode_type=H265</code> 才是真档位，<code>bitrate_type</code> 还顺带给出标准字段完全不报的码率模式（C/V）。</p>
+<p><b>设计决策：声明值与真实值分离，而不是就地覆盖。</b>数据模型 <code>EncoderSettings</code> 因此有两个字段：<code>encoding</code> 保持<b>设备自报的标准值</b>，<code>encoding_actual</code> 存放取到的真档位（取不到私有 JSON 时二者相等）。之所以不能让 <code>encoding</code> 直接显示 H265——写回时 <code>SetVideoEncoderConfiguration</code> 要原样回传设备自报值，把展示用的真值塞进写路径，等于凭空造出一个设备不认识（甚至拒收）的枚举，是"显示成功但设备没动"这类事故的典型来源。界面上的分工随之固定：状态行与下拉显示 <code>encoding_actual</code>，提交载荷仍用 <code>encoding</code>（<code>camera_dialog.py:313</code>）。</p>
+<p><b>写入保护</b>：当 <code>encoding_actual != encoding</code>，说明设备通过私有通道表达配置，而本客户端<b>不逆向 TP-Link 的私有写协议</b>——用标准 <code>Set</code> 写 H265 既无法保证生效，也无法验证是否把设备配置写坏，风险与收益完全不对称。因此此时把编码项锁定为不可改（disabled），状态行明确写出原因：<code>编码 H265 取自设备私有字段（标准字段为 H264），已锁定不可改</code>，其余参数（分辨率/帧率/码率/码率模式/GOP）仍走标准 <code>Set</code> 正常读写。这是一条<b>有意的功能边界</b>，不是缺陷：本项目对 H.265 只做"如实回显"。</p>
+<p><b>两处配套的解析加固</b>：（1）编码别名表补 <code>H265/HEVC</code> 归一（<code>onvif.py:69</code>），私有 JSON 报 <code>HEVC</code> 也能认；（2）值域扫描同时覆盖 <code>Extension</code> 块（<code>_option_blocks</code>），因为 TP-Link 把 <code>BitrateRange</code> 放在 Extension 里，且有些固件只在 Extension 报 H265 的编码块——只扫一层就会得出"H265 无值域"的错误结论，进而错误地锁死整张表单。</p>
+<figure class="mmd"><figcaption>图 5-2 声明值与真实值的分离与写入保护</figcaption>
+<div class="mmd-toolbar"><span class="mmd-btns"></span></div>
+<div class="mmd-stage"><pre class="mermaid">
+flowchart TD
+    A[GetVideoEncoderConfiguration 响应] --> B[标准字段 tt Encoding]
+    A --> C[anyAttribute 转义 JSON]
+    B --> D[encoding 声明值 H264]
+    C --> E[encode_type bitrate_type]
+    E --> F[encoding_actual 真实值 H265]
+    D --> G{两者是否一致}
+    F --> G
+    G -- 一致 --> H[编码项可选 正常读写]
+    G -- 不一致 --> I[编码项锁定不可改 状态行写明原因]
+    I --> J[其余参数仍走标准 Set]
+    D --> K[写回载荷固定用声明值]
+    K --> J
+    C -- 无私有 JSON --> F
+</pre></div>
+<div class="mmd-note">两条硬约束：<b>展示走真实值、写回走声明值</b>，二者永不相交；私有 JSON 取不到时两个字段相等，表单行为与未遇到私有字段的设备完全一致，不引入额外分支。</div>
+</figure>
+<div class="callout tip"><b>三方互证的结论</b>：同一台设备上，私有 JSON 报 <code>encode_type=H265</code>、标准字段报 H264，而用生效地址实拉时容器给出的 FOURCC 解出 <code>hevc</code>（主/子码流皆如此）——三条独立证据一致指向"真实编码 H.265、ONVIF 标准字段是占位值"。这条判定链值得记住：<b>当设备自报与实测矛盾时，用第三条独立通道仲裁，而不是挑一个信。</b></div>
+
+<h3>5.10 生效地址单一口径：消除"自检通过却没画面"</h3>
+<p><b>问题来源</b>：取流地址的生成在一度存在<b>三套并行逻辑</b>——出厂的 TP-Link 查询串模板（<code>url_template</code>）、手填的完整地址（<code>url</code>）、连接对话框按 IP/端口/账号/路径的拼装。三处调用点各挑一套：对话框预览用拼装、自检走 <code>compose_rtsp_url()</code>、取流走 <code>VideoCfg.resolved_url()</code>。后果是"测通了却没画面"——自检报 <code>DESCRIBE 正常</code>，实际拉流用的却是另一条地址，且没有任何日志能体现两者不同。这类口径分裂 bug 的特点是不会崩、不会报错，只会让界面自相矛盾，排查成本极高。</p>
+<p><b>收口方式</b>：拼装修正为<b>一个方法、一个优先级</b>。<code>VideoCfg.composed_url()</code>（<code>config.py:91</code>）是唯一的拼装实现，<code>resolved_url()</code>（<code>config.py:112</code>）按固定优先级决定生效地址：<b>手填 <code>url</code> 非空 → 整条优先</b>（并按当前档位换末段路径，见 4.9）；<b><code>url</code> 留空且填了 <code>stream_paths</code>、模板里又没有 <code>{path}</code> → 走 <code>composed_url()</code></b>；否则退回出厂模板。相机侧的 <code>compose_rtsp_url()</code> 降级为转调 <code>composed_url()</code> 的薄封装，只作界面"自动拼装"提示之用，注释里写死"别再单独发展第二套拼法"。</p>
+<p><b>两条容易忽略的细节</b>：（1）凭据段只在<b>用户名与密码都非空</b>时才写入，宁可得 <code>rtsp://ip:554/stream1</code> 也不产 <code>rtsp://admin:@ip</code>——后者必然 401，而 401 会让人去查密码是否错，而不是"密码根本没填"；密码中的 <code>@</code> <code>:</code> 做 URL 转义，否则域名被切错、设备回 404，故障类型完全跑偏。（2）越界档位取末档（<code>stream_index=9</code> 仍落 <code>stream2</code>），保证配置里残留的旧序号不会拼出空路径地址。</p>
+<p><b>回归锁</b>：新增 2 条断言把口径钉死——填了码流路径必须直拼（不得回落到厂商模板）、空密码必须丢凭据段且特殊字符要转义；同时保留 3 条既有断言（模板优先的三种情形）不放宽。最终由一条端到端验证收口：在同一台真机上 <code>RtspVideoSource.url == resolved_url() == compose_rtsp_url()</code> 三者一致，并用这条地址实际读到主码流 1920×1080、子码流 640×360 连续出帧（3 秒采样各约 27 帧，与 SDP 声明的 25fps 同量级），"测通了没画面"在结构上已不可能发生。</p>
+
 <h2>6 测试与验证</h2>
 
 <h3>6.1 测试策略与环境</h3>
-<p>pytest + offscreen Qt 平台，不依赖任何硬件；UI 测试用 <code>build_session(None, mock=True)</code> 建会话、以 <code>UiBridge.interval_ms=200</code> 的桥手动触发节拍来模拟交付时序；lint 采用 ruff（行宽 100）。环境为 conda 环境 ewd611-hmi（Python 3.11）。ONVIF 链路的测试用假客户端替换 <code>CameraConfigService._client()</code>，不触网络即可断言读、写、值域过滤与异常回总线四条路径。</p>
+<p>pytest + offscreen Qt 平台，不依赖任何硬件；UI 测试用 <code>build_session(None, mock=True)</code> 建会话、以 <code>UiBridge.interval_ms=200</code> 的桥手动触发节拍来模拟交付时序；lint 采用 ruff（行宽 100）。环境为 conda 环境 ewd611-hmi（Python 3.11）。ONVIF 链路的测试用假客户端替换 <code>CameraConfigService._client()</code>，不触网络即可断言读、写、值域过滤与异常回总线四条路径；RTSP 探测的测试用一次性本地 socket 假服务（可分别模拟拒连、监听但不应答、返回 401、返回 404、返回合法 SDP 五种行为），使四类故障判据与成功文案都能在离线环境逐条断言。</p>
+<p><b>会写盘的测试一律用临时副本</b>：连接参数对话框的保存路径涉及 <code>cfg.save()</code>，测试与冒烟脚本都先把 <code>config/app.yaml</code> 拷到临时目录再 <code>build_session(副本路径)</code>，断言写回结果落在副本上，仓库配置字节数前后不变——否则一次回归就会把真机参数（含密码）永久写进版本库。</p>
 <p><b>解释器要分清</b>：跑 pytest 用仓库内 <code>.venv</code>（依赖齐全、含 pytest 与 ruff），打包构建用独立 Conda 解释器 + 外置依赖目录（见 7.2）。用错解释器最坏的表现是配置静默回落默认值（如 <code>onvif_port</code> 退回 80），会把排查带向完全错误的方向。</p>
 
 <h3>6.2 测试基线</h3>
 <table>
 <tr><th>层</th><th>测试文件</th><th>覆盖点</th></tr>
-<tr><td>协议</td><td>codec / client / registry / telemetry / telemetry_frames / templates / passthrough / onvif</td><td>编解码往返、超时重试、28 条规格校验、链路遥测解析、Wheeltec 上/下行帧编解码与备注语义化（binary/ascii 占位保留）、模板与 CRC；ONVIF 的 SOAP 组装与命名空间无关解析、Media1 服务地址挑选、WS-Security/Digest 认证分支、值域模型与 <code>clamped()</code>、Fault 与不可达的错误文案、解析器缺失翻译成 OnvifError</td></tr>
+<tr><td>协议</td><td>codec / client / registry / telemetry / telemetry_frames / templates / passthrough / onvif</td><td>编解码往返、超时重试、28 条规格校验、链路遥测解析、Wheeltec 上/下行帧编解码与备注语义化（binary/ascii 占位保留）、模板与 CRC；ONVIF 的 SOAP 组装与命名空间无关解析、Media1 服务地址挑选、WS-Security/Digest 认证分支、值域模型与 <code>clamped()</code>、Fault 与不可达的错误文案、解析器缺失翻译成 OnvifError；厂商私有 JSON 解析（<code>encode_type</code>/<code>bitrate_type</code>）只补 <code>encoding_actual</code> 而不覆盖声明值、子码流读出 VBR、编码别名归一化表、夹取时对"私有字段报 H265 的设备"保留声明编码不替换</td></tr>
 <tr><td>传输</td><td>transport_mock</td><td>仿真传输分帧与应答</td></tr>
-<tr><td>服务与视频链</td><td>session / link / radio / passthrough / record / periodic / telemetry / motion / video / camera_config，及 frame_pacing / video_url</td><td>装配生命周期、链路轮询、遥测节流/新鲜度/边沿告警/里程/CSV 落盘、运动斜坡限幅/周期重发/停止帧边沿/急停、视频服务传输切换与 URL 构造、放帧队列时间基跳帧与 dropped/skipped 分账；摄像头参数读/写成功与失败落成结果、越界码流序号、值域夹取后写入、成功后重启取流、失败不重启、单在途忙判、工作线程异常仍回总线</td></tr>
-<tr><td>界面</td><td>app / main_window / bridge / pages / base_page / theme / qt_api_usage / 六页各一 / motion_pad 与键盘挂接 / camera_dialog</td><td>装配、桥投递、页面构建/交互/降级、主题换算、视频页传输下拉与 OSD、数据页列宽与备注、方向盘按住松开/自动重复对称过滤（按住不回零）/失焦急停/双降级；摄像头弹窗按结果填控件、读取前只读、值域联动、忙态按钮与状态行文案</td></tr>
-<tr><td>合计</td><td>37 个文件</td><td><b>725 条用例全部通过</b>，ruff 全仓无告警</td></tr>
+<tr><td>服务与视频链</td><td>session / link / radio / passthrough / record / periodic / telemetry / motion / video / camera_config，及 frame_pacing / video_url</td><td>装配生命周期、链路轮询、遥测节流/新鲜度/边沿告警/里程/CSV 落盘、运动斜坡限幅/周期重发/停止帧边沿/急停、视频服务传输切换与 URL 构造、放帧队列时间基跳帧与 dropped/skipped 分账；摄像头参数读/写成功与失败落成结果、越界码流序号、值域夹取后写入、成功后重启取流、失败不重启、单在途忙判、工作线程异常仍回总线；<b>连接侧</b>地址拼装（凭据转义、缺 IP/路径拒绝拼、越界档位取末档）、探测的 RTSP 四类故障（拒连/静默端口/401 归因密码/404 归因路径）与成功文案取自 SDP、凭据不进请求行、RTSP 与 ONVIF 两路判定互不牵连、探测用快照而非已存配置、<code>apply_connection()</code> 白名单回写 + 热重连 + 空目标拒绝 + 写盘失败不炸 + 无视频服务时降级</td></tr>
+<tr><td>界面</td><td>app / main_window / bridge / pages / base_page / theme / qt_api_usage / 六页各一 / motion_pad 与键盘挂接 / camera_dialog / camera_conn_dialog</td><td>装配、桥投递、页面构建/交互/降级、主题换算、视频页传输下拉与 OSD、数据页列宽与备注、方向盘按住松开/自动重复对称过滤（按住不回零）/失焦急停/双降级；摄像头弹窗按结果填控件、读取前只读、值域联动、忙态按钮与状态行文案、<b>编码项按设备真值锁定且写回仍用声明值</b>；连接弹窗控件与已存配置镜像、<b>编辑过程不碰真实配置</b>、密码明文开关、预览随码流档与手填 URL 清空联动且空密码丢凭据段、【测试】送快照且忙态二次点击被吞、空目标拒绝、结果渲染两行 √/×、非 <code>camera/probe</code> 主题忽略、【保存】失败保留编辑且不回调、保存后重开仍显示新值、事件触发时控件为空才重载</td></tr>
+<tr><td>合计</td><td>38 个文件</td><td><b>750 条用例全部通过</b>，ruff 全仓无告警（<code>test_transport_mock.py</code> 依赖 pyserial，在离线环境按既有口径跳过不计入）</td></tr>
 </table>
 
 <h3>6.3 GUI 冒烟与集成问题闭环</h3>
-<p>两类冒烟：真实配置启动（无串口环境）降级存活 12 秒验证；<code>gui --set app.mock=true</code> 验证仿真全链路。冒烟曾暴露一个集成缺陷——cmd_gui 未把 <code>--set</code> 覆盖透传给 run_app，导致命令行覆盖全部丢失；修复为 overrides 单一真源透传后，日志确认 <code>channel=mock mock=True link=True video=True record=True</code>，全仓回归保持通过（当前基线 725 条用例）。运动控制迭代与键盘长按修复后 GUI 冒烟（真实配置无串口降级启动）12 秒存活复验通过。冻结包（exe）另做一轮独立冒烟：构建后直接启动，核对 <code>logs/startup.log</code> 的功能级探针（含真解析一次 XML）与 <code>crash.log</code> 为空，再在包内改 <code>config/app.yaml</code> 复验 ONVIF 读参数与 485 透传；5.8 的两条静默失败路径已补 4 条用例（解析器缺失翻译成 <code>OnvifError</code>、工作线程异常仍回总线等）并纳入 725 条基线。</p>
+<p>两类冒烟：真实配置启动（无串口环境）降级存活 12 秒验证；<code>gui --set app.mock=true</code> 验证仿真全链路。冒烟曾暴露一个集成缺陷——cmd_gui 未把 <code>--set</code> 覆盖透传给 run_app，导致命令行覆盖全部丢失；修复为 overrides 单一真源透传后，日志确认 <code>channel=mock mock=True link=True video=True record=True</code>，全仓回归保持通过（当前基线 750 条用例）。运动控制迭代与键盘长按修复后 GUI 冒烟（真实配置无串口降级启动）12 秒存活复验通过。冻结包（exe）另做一轮独立冒烟：构建后直接启动，核对 <code>logs/startup.log</code> 的功能级探针（含真解析一次 XML）与 <code>crash.log</code> 为空，再在包内改 <code>config/app.yaml</code> 复验 ONVIF 读参数与 485 透传；5.8 的两条静默失败路径已补 4 条用例（解析器缺失翻译成 <code>OnvifError</code>、工作线程异常仍回总线等）并纳入基线。</p>
+<p><b>本版新增的三段实机验收</b>（TL-IPC341P-W2.8 直连网线，非 mock）：</p>
+<p>① <b>连通性自检与地址一致性</b>：主、子两档分别断言 <code>VideoCfg.resolved_url(idx) == compose_rtsp_url(...)</code>，且取流线程实际持有的 <code>RtspVideoSource.url</code> 与之一字不差；【测试】两行均 √——RTSP 行给出"DESCRIBE 正常：视频 1 路"（分辨率细节取自 SDP），ONVIF 行回显厂商/型号/序列号与 <code>auth_mode=wsse</code>。这条断言是 5.10 "生效地址单一口径"的直接产物：只要三处同源，"自检 √ 却没画面"在结构上就不可能出现。</p>
+<p>② <b>端到端实拉</b>：主码流解出 1920×1080、子码流 640×360，各取 3 秒约 27 帧，与 SDP 声明的 25fps 相符；<code>cv2</code> 的 FOURCC 回读为 <code>hevc</code>，与私有 JSON 报出的 H265 互相印证（三方互证见 5.9），证明"回显真值"这条路径读到的不是文档字符串而是设备实际行为。</p>
+<p>③ <b>offscreen 界面级冒烟</b>：用真实 <code>build_session(临时 yaml 副本, mock=True)</code> 打开视频页 →"摄像头连接…"，逐项核对控件灌值（IP / 554 / 80 / admin / 主 stream1 子 stream2 / udp，密码按长度回显）、切码流档预览地址同步、点【测试】待两行结果染成绿色 √（真机 RTSP + ONVIF 串行，约 26 秒返回，属超时上限内的预期耗时）、【恢复当前配置】复原、【保存】后写回的是临时副本且视频页按钮文案随 <code>on_saved</code> 回调同步为"切换主码流"。仓库内的 <code>config/app.yaml</code> 字节数前后不变，确认回归与冒烟不会把真机凭据写进版本库。</p>
+<p>这三段验收各暴露过一次脚手架问题而非产品缺陷，记录以免重复踩：冒烟脚本建了 <code>UiBridge</code> 却没调用 <code>bridge.start()</code>，总线从未订阅，导致【测试】按钮永久禁用、状态停在"正在探测…"——排查方向一度指向产品代码，实为脚手架缺一次订阅；以及把 <code>cfg</code> 误当 <code>VideoCfg</code> 传给 <code>RtspVideoSource</code>。判据是同一条：<b>异步按钮"点了没反应"先查总线订阅与线程回投，再查业务逻辑</b>（与 5.8 教训①同源）。</p>
 
 <h2>7 部署与交付</h2>
 <h3>7.1 源码部署（conda 环境）</h3>
 <p>部署三步：conda 按 <code>environment.yml</code> 建环境（Python 3.11）→ <code>pip install -r requirements.txt</code>（7 项运行时依赖：pyserial、av、numpy、PyQt5、pyqtgraph、PyYAML、Pillow）→ <code>python run.py selfcheck</code> 通过后 <code>python run.py gui</code>。无网络环境可用项目内置 <code>.deps</code> 目录作 PYTHONPATH 兜底；开发期回归测试固定用仓库内 <code>.venv</code> 解释器（见 6.1）。详细步骤、配置说明与故障排查见配套《操作部署手册》。</p>
+<p><b>仓库内的 <code>config/app.yaml</code> 不含真机密码</b>：<code>video.password</code> 与 <code>video.url</code> 故意留空，克隆或解压后首次取流有两种补法——启动后在视频页"摄像头连接…"填一次并【保存】（写回本地文件，不需要同步回仓库），或直接编辑该文件的 <code>password</code> 字段。IP、端口、账号与主·子码流路径已按现网实机填好作为默认值，留空的凭据会自动按 IP/端口/账号/路径拼装取流地址（见 5.10），因此密码缺失的表现是 401 归因文案而不是地址拼不出来。</p>
 
 <h3>7.2 免装环境 exe 打包交付</h3>
 <p>交付形态为 PyInstaller <b>onedir 冻结包</b>：一个目录自带解释器、依赖与资源，目标笔记本不装 Python，双击 <code>EWD611-HMI.exe</code> 即可运行，整目录压成 zip（约 111 MB）分发。<b>本节只记录流程、注意事项与踩坑清单</b>，spec 与构建脚本的参数细节以仓库内 <code>EWD611-HMI.spec</code>、<code>package.ps1</code> 为唯一真源，不在此重复。</p>
@@ -572,8 +678,10 @@ flowchart LR
 <div class="callout warn"><b>踩坑清单</b>：① <b>libexpat 与 pyexpat 错配</b>——PyInstaller 从别处收进同名 DLL，导致冻结包内读摄像头参数永久"读取中"且日志零记录，判据与三层修法见 5.8。② <b>自检改动没进包</b>——改完入口自检直接看产物以为生效，其实那次构建早已完成源码同步，重跑 Full 构建后 <code>startup.log</code> 才出现探针行。③ <b>解释器混用造成配置静默回落</b>——裸 Conda 解释器缺 PyYAML，<code>app.yaml</code> 读不进去而全部退回默认值，症状是"ONVIF 端口莫名变成 80、连不上摄像头"，属假线索；排查配置问题先确认用了哪个解释器、日志里实际读到的值是多少。④ <b>PowerShell 语法与退出码语义</b>——不支持 <code>&amp;&amp;</code> 串联命令，需用 <code>;</code>；<code>robocopy</code> 返回 0–7 都算成功，按"非 0 即失败"判定会把成功的部署误报为失败。</div>
 
 <h2>8 结论与后续改进</h2>
-<p>软件按分层与消息驱动完成了全部功能需求，并在计划外扩展了三块能力：机器人运动控制与限速（含键盘与方向盘双入口）、遥测状态栏与曲线（电压/电流/速度分账）、摄像头编码参数的 ONVIF 远程配置（见 4.9）；725 条测试与"源码 + 冻结包"双形态冒烟验证了正确性与降级健壮性；免装环境的 exe 交付（见 7.2）使同一套代码可以不经安装直接放到其它笔记本上跑。模块化结构使六个功能页、五种传输、28 条电台参数与摄像头参数各自可独立演进，打包层的三处纠偏也沉淀成了可复用的判据（见 5.8）。</p>
+<p>软件按分层与消息驱动完成了全部功能需求，并在计划外扩展了三块能力：机器人运动控制与限速（含键盘与方向盘双入口）、遥测状态栏与曲线（电压/电流/速度分账）、摄像头参数的界面化配置（编码参数的 ONVIF 远程读写见 4.9，连接参数的配置与连通性自检见 4.10）；750 条测试与"源码 + 冻结包 + 真机"三形态冒烟验证了正确性与降级健壮性；免装环境的 exe 交付（见 7.2）使同一套代码可以不经安装直接放到其它笔记本上跑。模块化结构使六个功能页、五种传输、28 条电台参数与摄像头参数各自可独立演进，打包层的三处纠偏也沉淀成了可复用的判据（见 5.8）。</p>
+<p>实机联调把两处"看起来是 bug、其实是设备行为"的问题固定成了设计口径：标准字段与厂商私有字段冲突时，<b>回显取真值、写回用声明值</b>，并在界面说明取值来源与锁定原因（见 5.9）；预览、自检、取流三处的地址<b>必须来自同一个生成函数</b>，否则任何"自检通过但没画面"都无法归因（见 5.10）。凭据处理同样定了边界：仓库配置一律脱敏、真机密码不入库，界面填一次保存即写回本地文件，回显与日志中的地址一律遮蔽密码段。</p>
 <p>后续改进方向：服务层集成测试进一步补齐；多摄像头与双端（AP/STA 角色互换）配置预设；告警声光提示与阈值在线编辑；信道曲线历史导出 CSV 供离线分析；以及把打包流程脚本化为"构建 + 冒烟 + 校验"一键门禁，使 5.8 类装配回归在出包前就被拦住。</p>
+<p>本期评估后<b>明确不做</b>的两项，避免后续误当成待办：（1）摄像头自动发现（WS-Discovery 组播探测）——现网只有一台固定 IP 的摄像头，而 IP 与端口已能在界面三秒内填完并自检，引入组播探测带来的防火墙/多网卡选择问题收益为负；改为在【测试】里把"端口不通"直接归因到 IP/端口并提示核对（见 4.10）。（2）H.265 编码的界面写入——设备侧编码切换只在其私有 JSON 里表达，ONVIF Media1 没有对应的合法写入口，逆向猜测写入有配置改坏且不可回滚的风险；保持"只读回显 + 编码项锁定"，需要换编码时走摄像头自带的 APP 或网页端。</p>
 
 <div class="callout">本文档为单文件 HTML：目录可跳转、流程图可缩放并可查看 mermaid 源码；点击左栏"下载本页"可离线保存，"文档打包下载"获取两份文档合集。</div>
 </main>

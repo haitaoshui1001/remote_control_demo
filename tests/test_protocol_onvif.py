@@ -26,6 +26,7 @@ from hmi.protocol.onvif import (
     EncoderSettings,
     OnvifClient,
     OnvifError,
+    _norm_encoding,
     _parse_xml,
     _pick_media_url,
     _wsse_header,
@@ -823,3 +824,135 @@ def test_parse_xml_translates_missing_expat(monkeypatch):
     with pytest.raises(OnvifError) as ei:
         _parse_xml(b"<x/>", "http://192.168.1.10:8899/onvif/media")
     assert "XML 解析器不可用" in str(ei.value)
+
+
+# ---------------------------------------------------------------- TP-Link 私有字段
+# 实机 TL-IPC341P 原文（GetVideoEncoderConfiguration / ...Options）。
+# 坑在这里：tt:Encoding 恒为占位值 H264，真档位 H265 与码率模式只写在
+# Configuration 的 anyAttribute 属性（转义 JSON）里；Options 又只有 H264 块，
+# 于是界面上"只看到 H264"，用户点【应用】就会把 H.265 刷成 H.264。
+_TPLINK_MAIN_CFG = (
+    '<trt:GetVideoEncoderConfigurationResponse '
+    f'{_NS_MEDIA} {_NS_TT}>'
+    '<trt:Configuration token="main" anyAttribute="{&quot;video&quot;:{&quot;main&quot;:'
+    '{&quot;quality&quot;:&quot;3&quot;,&quot;bitrate&quot;:&quot;1024&quot;,'
+    '&quot;frame_rate&quot;:&quot;65561&quot;,&quot;encode_type&quot;:&quot;H265&quot;,'
+    '&quot;resolution&quot;:&quot;1920*1080&quot;,&quot;bitrate_type&quot;:&quot;cbr&quot;,'
+    '&quot;name&quot;:&quot;VideoEncoder_1&quot;}},&quot;error_code&quot;:0}">'
+    "<tt:Name>VideoEncoder_1</tt:Name><tt:UseCount>1</tt:UseCount>"
+    "<tt:Encoding>H264</tt:Encoding>"
+    "<tt:Resolution><tt:Width>1920</tt:Width><tt:Height>1080</tt:Height>"
+    "</tt:Resolution><tt:Quality>3</tt:Quality>"
+    "<tt:RateControl><tt:FrameRateLimit>25</tt:FrameRateLimit>"
+    "<tt:EncodingInterval>1</tt:EncodingInterval>"
+    "<tt:BitrateLimit>1024</tt:BitrateLimit></tt:RateControl>"
+    "<tt:H264><tt:GovLength>25</tt:GovLength>"
+    "<tt:H264Profile>Main</tt:H264Profile></tt:H264>"
+    "</trt:Configuration></trt:GetVideoEncoderConfigurationResponse>"
+)
+_TPLINK_MINOR_CFG = _TPLINK_MAIN_CFG.replace(
+    'token="main" anyAttribute="{&quot;video&quot;:{&quot;main&quot;:',
+    'token="minor" anyAttribute="{&quot;video&quot;:{&quot;minor&quot;:',
+).replace(
+    '&quot;bitrate_type&quot;:&quot;cbr&quot;', '&quot;bitrate_type&quot;:&quot;vbr&quot;'
+).replace(
+    "&quot;quality&quot;:&quot;3&quot;,&quot;bitrate&quot;:&quot;1024&quot;",
+    "&quot;quality&quot;:&quot;3&quot;,&quot;bitrate&quot;:&quot;512&quot;",
+)
+_TPLINK_OPTIONS = (
+    '<trt:GetVideoEncoderConfigurationOptionsResponse '
+    f'{_NS_MEDIA} {_NS_TT}>'
+    "<trt:Options><tt:QualityRange><tt:Min>1</tt:Min><tt:Max>5</tt:Max>"
+    "</tt:QualityRange>"
+    "<tt:H264>"
+    "<tt:ResolutionsAvailable><tt:Width>1920</tt:Width>"
+    "<tt:Height>1080</tt:Height></tt:ResolutionsAvailable>"
+    "<tt:ResolutionsAvailable><tt:Width>2560</tt:Width>"
+    "<tt:Height>1440</tt:Height></tt:ResolutionsAvailable>"
+    "<tt:GovLengthRange><tt:Min>25</tt:Min><tt:Max>25</tt:Max></tt:GovLengthRange>"
+    "<tt:FrameRateRange><tt:Min>1</tt:Min><tt:Max>25</tt:Max></tt:FrameRateRange>"
+    "</tt:H264>"
+    "<tt:Extension><tt:H264>"
+    "<tt:ResolutionsAvailable><tt:Width>1920</tt:Width>"
+    "<tt:Height>1080</tt:Height></tt:ResolutionsAvailable>"
+    "<tt:ResolutionsAvailable><tt:Width>1280</tt:Width>"
+    "<tt:Height>720</tt:Height></tt:ResolutionsAvailable>"
+    "<tt:BitrateRange><tt:Min>256</tt:Min><tt:Max>4096</tt:Max></tt:BitrateRange>"
+    "</tt:H264><tt:H265>"
+    "<tt:ResolutionsAvailable><tt:Width>2560</tt:Width>"
+    "<tt:Height>1440</tt:Height></tt:ResolutionsAvailable>"
+    "<tt:FrameRateRange><tt:Min>1</tt:Min><tt:Max>25</tt:Max></tt:FrameRateRange>"
+    "</tt:H265></tt:Extension>"
+    "</trt:Options></trt:GetVideoEncoderConfigurationOptionsResponse>"
+)
+
+
+def _tplink_client(body_xml: str) -> OnvifClient:
+    """把一段录好的应答 body 挂到客户端上，绕开 HTTP 只验解析。"""
+    cli = OnvifClient("192.168.1.60", 80, "admin", "pw123456")
+    root = _parse_xml(
+        (_ENVELOPE_OPEN + body_xml + _ENVELOPE_CLOSE).encode(), "http://x/media"
+    )
+    cli._media = lambda *_a, **_k: root  # type: ignore[assignment]
+    return cli
+
+
+def test_tplink_private_encoding_does_not_overwrite_declared():
+    st = _tplink_client(_TPLINK_MAIN_CFG).get_encoder_configuration("main")
+    assert st.encoding == "H264"  # 标准字段原值：写回按它走
+    assert st.encoding_actual == "H265"  # 私有字段真值：只用于回显
+    assert st.rate_mode == "C"
+    assert (st.width, st.height, st.frame_rate) == (1920, 1080, 25)
+    assert st.bitrate_kbps == 1024  # 私有 bitrate 与标准 BitrateLimit 一致
+
+
+def test_tplink_private_bitrate_type_reads_vbr_on_sub_stream():
+    st = _tplink_client(_TPLINK_MINOR_CFG).get_encoder_configuration("minor")
+    assert st.rate_mode == "V"
+    assert st.encoding_actual == "H265"
+
+
+def test_tplink_garbage_any_attribute_is_ignored():
+    bad = _TPLINK_MAIN_CFG.replace(
+        'anyAttribute="{&quot;video&quot;:{&quot;main&quot;:', 'anyAttribute="not json:'
+    )
+    st = _tplink_client(bad).get_encoder_configuration("main")
+    assert st.encoding == "H264"
+    assert st.encoding_actual == "H264"
+    assert st.rate_mode == "C"
+
+
+def test_tplink_options_scans_extension_and_merges():
+    """Extension 里的块也要算：H265 只写在 Extension 时下拉必须出现它。"""
+    opt = _tplink_client(_TPLINK_OPTIONS).get_encoder_options("main")
+    assert opt.encodings == ["H264", "H265"]
+    assert opt.source == "device"
+    assert opt.bitrate_range == (256, 4096)  # 只有 Extension 块带 BitrateRange
+    assert (1280, 720) in opt.resolutions_for("H264")  # 直接块与 Extension 合并
+    assert (2304, 1296) not in opt.resolutions_for("H264")
+    assert opt.resolutions_for("H265") == [(2560, 1440)]
+
+
+@pytest.mark.parametrize(
+    "raw,want",
+    [
+        ("HEVC", "H265"),
+        ("H.265", "H265"),
+        ("AVC", "H264"),
+        ("Mpeg4", "MPEG4"),  # Media1 的块名是小写 g，不归一就匹配不上值域
+        ("h264", "H264"),
+        ("", ""),
+    ],
+)
+def test_norm_encoding_aliases(raw: str, want: str):
+    assert _norm_encoding(raw) == want
+
+
+def test_clamped_keeps_declared_encoding_for_private_codec_device():
+    """TP-Link 这类设备：声明 H264、真跑 H265，夹取不得动编码，也不得改分辨率档。"""
+    opt = _tplink_client(_TPLINK_OPTIONS).get_encoder_options("main")
+    cur = _tplink_client(_TPLINK_MAIN_CFG).get_encoder_configuration("main")
+    out, fixed = cur.clamped(opt)
+    assert out.encoding == "H264"
+    assert out.encoding_actual == "H265"
+    assert not any("编码" in f for f in fixed)

@@ -6,14 +6,19 @@ app:
   title: EWD611 数传图传上位机控制台
   templates_file: config/templates.yaml
 video:
-  camera_ip: 192.168.1.10
+  camera_ip: 192.168.1.60
   rtsp_port: 554
-  onvif_port: 8899
+  onvif_port: 80
   user: admin
   password: ''
+  # 密码与 url 故意留空（不入库）：界面【摄像头连接…】填一次并保存即写回本文件，
+  # 留空时取流地址按 IP/端口/账号/stream_paths 自动拼装。
   channel: 1
-  stream_index: 1
+  stream_index: 0
   url: ''
+  stream_paths:
+  - stream1
+  - stream2
   url_template: rtsp://{ip}:{port}/user={user}&password={password}&channel={channel}&stream={stream}.sdp?
   transport: udp
   auto_connect: true
@@ -23,7 +28,7 @@ video:
   open_timeout_us: 5000000
   decode_threads: 2
   render_fps_limit: 25.0
-  drop_late_frames: true
+  drop_late_frames: false
   keep_aspect: true
   show_osd: true
   buffer_ms: 100

@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
+import re
 import secrets
 import urllib.error
 import urllib.request
@@ -62,9 +64,29 @@ _MEDIA_ACTIONS = (
     "SetVideoEncoderConfiguration",
 )
 
-# Options 应答里代表"某一编码的分档值域"的元素名（Media1 用块名，Media2 用
-# <Encoding> 文本，两边都归到这个名字上）。
+# Options 应答里代表"某一编码的分档值域"的名字（Media1 用块名，Media2 用
+# <Encoding> 文本，两边都先经 _norm_encoding 归一到这些名字上）。
 _ENCODING_NAMES = ("H264", "H265", "MPEG4", "JPEG", "JPEG2000", "AV1")
+
+# 各厂商写法的别名表：Media1 的块名是 ``Mpeg4``，私有 JSON 里 HEVC 与 H265 混用，
+# 不归一就会出现"设备支持 H265 但下拉里找不到"的假象。
+_ENCODING_ALIASES = {
+    "AVC": "H264",
+    "H264": "H264",
+    "HEVC": "H265",
+    "H265": "H265",
+    "MPEG4": "MPEG4",
+    "MP4V": "MPEG4",
+    "JPEG2000": "JPEG2000",
+    "JPEG": "JPEG",
+    "AV1": "AV1",
+}
+
+
+def _norm_encoding(raw: str) -> str:
+    """编码名归一：去掉 ``.`` ``-`` 等分隔符再查别名，认不出的原样大写返回。"""
+    key = re.sub(r"[^A-Z0-9]", "", (raw or "").upper())
+    return _ENCODING_ALIASES.get(key, key)
 
 
 class OnvifError(RuntimeError):
@@ -95,6 +117,11 @@ class EncoderSettings:
     peak_bitrate_kbps: int | None = None
     encoding_interval: int = 0  # Media1 RateControl 的抽帧间隔，0 = 不抽帧
     codec_profile: str = "Main"  # H264Profile / H265Profile 档位
+    # 设备"真实"编码：厂商私有字段报的档位。TP-Link 的 ``tt:Encoding`` 恒为占位
+    # 值 H264，真值只在 ``anyAttribute`` 的 JSON 里（encode_type=H265）。空串表示
+    # 没有私有字段、与 ``encoding`` 相同。只在读侧与 UI 使用，写回仍按 ``encoding``
+    # 原样回传，避免把 H.265 悄悄改成 H.264。
+    encoding_actual: str = ""
 
     def clamped(self, opt: EncoderOptions) -> tuple[EncoderSettings, list[str]]:
         """用设备自报的值域过滤目标参数，返回（修正后的设置，修正说明列表）。"""
@@ -218,6 +245,44 @@ def _ints_in_text(text: str) -> list[int]:
     return out
 
 
+def _private_video(cfg: ET.Element, token: str) -> dict:
+    """取厂商私有 JSON 里本路码流的配置字典，取不到返回空字典。
+
+    TP-Link 把真配置塞在 ``trt:Configuration`` 的 ``anyAttribute`` **属性**上
+    （一段转义 JSON，形如 ``{"video":{"main":{...}},"error_code":0}``），标准
+    ``tt:Encoding`` 只是占位值。字典按编码 token 分组，token 对不上就退回首项。
+    """
+    raw = (cfg.get("anyAttribute") or "").strip()
+    if not raw.startswith("{"):
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    video = data.get("video")
+    if not isinstance(video, dict):
+        return {}
+    rows = [v for v in video.values() if isinstance(v, dict)]
+    if not rows:
+        return {}
+    own = video.get(token)
+    if isinstance(own, dict) and own:
+        return own
+    return rows[0]
+
+
+def _rate_mode(raw: str) -> str:
+    """私有字段里的码率模式（cbr/vbr）归一为 C/V，认不出返回空串。"""
+    key = (raw or "").strip().lower()
+    if key in ("cbr", "const", "constant"):
+        return "C"
+    if key in ("vbr", "var", "variable"):
+        return "V"
+    return ""
+
+
 def _option_blocks(root: ET.Element):
     """把两种 Options 形状统一成 (编码名, 值域元素, 属性宿主)。
 
@@ -225,14 +290,23 @@ def _option_blocks(root: ET.Element):
     雄迈实机回的是 Media2 风格——并列多个 ``<Options>``，编码写在子元素
     ``<Encoding>`` 里，支持的帧率枚举写在 ``FrameRatesSupported`` 属性上。
     只按 Media1 形状找 ``<H264>`` 块，实机就会一样都取不到、全体退回默认值域。
+
+    ``<Extension>`` 里也可能带编码块（TP-Link 把 BitrateRange 放这儿），有些固件
+    只在 Extension 里报 H265，所以两层都要扫；同名块会出现多次，由调用方合并值域。
     """
     for opt in _findall(root, "Options"):
-        blocks = [c for c in opt if _local(c) in _ENCODING_NAMES]
+        blocks = [c for c in opt if _norm_encoding(_local(c)) in _ENCODING_NAMES]
+        for ext in opt:
+            if _local(ext) != "Extension":
+                continue
+            blocks.extend(
+                c for c in ext if _norm_encoding(_local(c)) in _ENCODING_NAMES
+            )
         if blocks:
             for c in blocks:
-                yield _local(c), c, opt
+                yield _norm_encoding(_local(c)), c, opt
             continue
-        enc = _text_of(opt, "Encoding").upper()
+        enc = _norm_encoding(_text_of(opt, "Encoding"))
         if enc:
             yield enc, opt, opt
 
@@ -535,6 +609,18 @@ class OnvifClient:
                 st.quality = float(quality)
             except ValueError:
                 st.quality = None
+        st.encoding_actual = st.encoding
+        priv = _private_video(cfg, token)
+        if priv:
+            # 厂商私有字段优先：TP-Link 的 tt:Encoding 恒为 H264 占位，真档位与
+            # 码率模式只在这段 JSON 里（encode_type / bitrate_type）。注意
+            # ``encoding`` 保持设备自报值不动——写回要原样回传，改的是展示值。
+            enc = _norm_encoding(str(priv.get("encode_type") or ""))
+            if enc:
+                st.encoding_actual = enc
+            mode = _rate_mode(str(priv.get("bitrate_type") or ""))
+            if mode:
+                st.rate_mode = mode
         return st
 
     def get_encoder_options(self, token: str) -> EncoderOptions:
@@ -557,8 +643,10 @@ class OnvifClient:
                 if w and h and (w, h) not in rows:
                     rows.append((w, h))
             if rows:
-                by_encoding[name] = rows
+                bucket = by_encoding.setdefault(name, [])
                 for r in rows:
+                    if r not in bucket:
+                        bucket.append(r)
                     if r not in resolutions:
                         resolutions.append(r)
             # 帧率：Media2 风格给枚举清单，Media1 给 Min/Max 区间，两种都收

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QComboBox,
     QDialog,
@@ -60,6 +61,11 @@ class CameraConfigDialog(QDialog):
         self._current: EncoderSettings | None = None
         self._options: Any = None
         self._loading = False
+        # 设备私有字段报的真档位与 ONVIF 标准字段不一致时（TP-Link：tt:Encoding
+        # 恒为 H264，anyAttribute 里才是 H265），编码项只读、写回原样回传标准值。
+        self._enc_locked = False
+        self._declared_enc = "H264"
+        self._actual_enc = "H264"
 
         self.combo_stream = QComboBox()
         self.combo_stream.addItem("主码流", 0)
@@ -87,6 +93,19 @@ class CameraConfigDialog(QDialog):
         )
         self.spin_bitrate = QSpinBox()
         self.spin_bitrate.setSuffix(" kbps")
+
+        # 下拉一律按内容自宽、弹层不截断省略号：值域是设备给的，长档位名
+        # （"2304x1296"、"H.265 (HEVC)"）不能因为控件窄就看不全。
+        for combo in (
+            self.combo_stream,
+            self.combo_encoding,
+            self.combo_resolution,
+            self.combo_fps,
+            self.combo_rate,
+        ):
+            combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+            combo.setMinimumContentsLength(12)
+            combo.view().setTextElideMode(Qt.ElideNone)
 
         self.form = QFormLayout()
         self.form.addRow("码流", self.combo_stream)
@@ -130,6 +149,9 @@ class CameraConfigDialog(QDialog):
             self.btn_apply,
         ):
             w.setEnabled(on)
+        # 编码档位不可信（设备只在私有字段里报真值）时，解锁后也保持只读
+        if on:
+            self.combo_encoding.setEnabled(not self._enc_locked)
 
     def _busy(self, on: bool, text: str) -> None:
         self._loading = on
@@ -174,6 +196,8 @@ class CameraConfigDialog(QDialog):
     def _on_load(self) -> None:
         self._current = None
         self._options = None
+        self._enc_locked = False
+        self.combo_encoding.setToolTip("")
         self._set_editable(False)
         stream = int(self.combo_stream.currentData())
         self._busy(True, "读取中……（经图传空口，可能要几秒）")
@@ -188,22 +212,37 @@ class CameraConfigDialog(QDialog):
         self._options = res.options
         opt = res.options
         cur = res.current
-        cur_enc = str(cur.encoding or "").strip() or "H264"
+        # declared = 设备标准字段自报值（写回按它走，改不得）；
+        # actual   = 私有字段里的真档位，只用于如实回显。两者不一致时锁定编码项。
+        declared = str(cur.encoding or "").strip() or "H264"
+        actual = str(getattr(cur, "encoding_actual", "") or "").strip() or declared
+        self._declared_enc = declared
+        self._actual_enc = actual
+        self._enc_locked = actual != declared
         encodings = [str(e) for e in opt.encodings if str(e).strip()]
-        if not encodings:
-            encodings = [cur_enc]
-        elif cur_enc not in encodings:
+        if actual not in encodings:
             # 设备自报的当前值不在它自己给出的 Options 里（实机见过这种不一致）。
             # 不补进去，下拉框就会一项都选不中、显示成空白，用户无从下手。
-            encodings.insert(0, cur_enc)
+            encodings.insert(0, actual)
         self.combo_encoding.blockSignals(True)
         self.combo_encoding.clear()
         for enc in encodings:
             self.combo_encoding.addItem(enc)
-        self._select(self.combo_encoding, cur_enc)
+        self._select(self.combo_encoding, actual)
         self.combo_encoding.blockSignals(False)
+        if self._enc_locked:
+            self.combo_encoding.setToolTip(
+                f"标准字段报 {declared}、私有字段报 {actual}，两者不一致：\n"
+                f"【应用】不会切换编码档位（按 {declared} 原样回传），\n"
+                f"要改 H.264 / H.265 请在摄像头厂商网页或 APP 的编码设置里做。"
+            )
+        else:
+            self.combo_encoding.setToolTip("")
 
-        self._fill_resolutions(self.combo_encoding.currentText(), f"{cur.width}x{cur.height}")
+        self._fill_resolutions(
+            declared if self._enc_locked else actual,
+            f"{cur.width}x{cur.height}",
+        )
 
         self.combo_fps.blockSignals(True)
         self.combo_fps.clear()
@@ -226,9 +265,12 @@ class CameraConfigDialog(QDialog):
         self._set_editable(True)
         self.btn_load.setEnabled(True)
         src = "设备实报值域" if getattr(opt, "source", "device") == "device" else "保守默认值域"
+        note = ""
+        if self._enc_locked:
+            note = f"；编码 {actual} 取自设备私有字段（标准字段为 {declared}），已锁定不可改"
         self.lbl_status.setText(
             f"当前：{cur.width}x{cur.height} {cur.frame_rate}fps "
-            f"{cur.bitrate_kbps}kbps {cur.encoding}（{src}）"
+            f"{cur.bitrate_kbps}kbps {actual}（{src}）{note}"
         )
 
     # ------------------------------------------------------------------ 编码联动
@@ -268,7 +310,13 @@ class CameraConfigDialog(QDialog):
         st = EncoderSettings(
             encoder_token=self._current.encoder_token,
             name=self._current.name,
-            encoding=str(self.combo_encoding.currentText() or "H264"),
+            # 锁定时按设备自报的标准值原样回传：界面显示的是私有字段的真档位，
+            # 把它当 Encoding 写回去等于悄悄改码，可能把 H.265 刷成 H.264。
+            encoding=(
+                self._declared_enc
+                if self._enc_locked
+                else str(self.combo_encoding.currentText() or "H264")
+            ),
             width=w,
             height=h,
             frame_rate=int(self.combo_fps.currentData() or 0),
@@ -279,6 +327,7 @@ class CameraConfigDialog(QDialog):
             # 编码档位与抽帧间隔界面上没给改，原样带回去，别让默认值把设备配置冲掉
             encoding_interval=int(self._current.encoding_interval or 0),
             codec_profile=str(self._current.codec_profile or "Main"),
+            encoding_actual=self._actual_enc,
         )
         ok = self.camera.apply_async(st)
         if not ok:

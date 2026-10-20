@@ -58,6 +58,71 @@ def test_explicit_url_without_stream_marker_is_untouched():
     assert v.resolved_url(0) == "rtsp://10.0.0.9/cam0/1"
 
 
+def test_stream_paths_swaps_trailing_path_on_manual_url():
+    """手填地址 + stream_paths：末段等于第一档时按码流序号换路径（TP-Link 实测）。"""
+    v = VideoCfg(
+        url="rtsp://admin:pw123456@192.168.1.60:554/stream1",
+        stream_index=0,
+        stream_paths=["stream1", "stream2"],
+    )
+    assert v.resolved_url(0) == "rtsp://admin:pw123456@192.168.1.60:554/stream1"
+    assert v.resolved_url(1) == "rtsp://admin:pw123456@192.168.1.60:554/stream2"
+    assert v.resolved_url(9) == "rtsp://admin:pw123456@192.168.1.60:554/stream2", "越界取最后一档"
+
+
+def test_stream_paths_placeholder_wins_over_tail_match():
+    v = VideoCfg(
+        url="rtsp://10.0.0.9/{path}?token=abc",
+        stream_paths=["/media/video1/", "media/video2"],
+    )
+    assert v.resolved_url(0) == "rtsp://10.0.0.9/media/video1?token=abc"
+    assert v.resolved_url(1) == "rtsp://10.0.0.9/media/video2?token=abc"
+
+
+def test_stream_paths_empty_keeps_legacy_behaviour():
+    """没配 stream_paths 就不能改变既有结论：地址整条不动、模板照常拼装。"""
+    v = VideoCfg(url="rtsp://10.0.0.9/cam0/1", stream_paths=[])
+    assert v.resolved_url(1) == "rtsp://10.0.0.9/cam0/1"
+    assert v._stream_path(0) == ""
+    plain = VideoCfg(url="", camera_ip="192.168.1.64")
+    assert "{path}" not in plain.resolved_url(1)
+    assert plain.resolved_url(1).endswith("stream=1.sdp?")
+
+
+def test_template_with_path_placeholder_tolerates_missing_paths():
+    """模板里写 {path} 时，stream_paths 留空只该得到空路径，不该 KeyError。"""
+    v = VideoCfg(url="", url_template="rtsp://{ip}/{path}", stream_paths=[])
+    assert v.resolved_url(0) == "rtsp://192.168.1.10/"
+    v.stream_paths = ["live", "sub"]
+    assert v.resolved_url(1) == "rtsp://192.168.1.10/sub"
+
+
+def test_stream_paths_present_composes_direct_url_not_vendor_template():
+    """填了码流路径就按 IP/端口/账号/路径直拼：自检和取流必须用同一条地址。
+
+    连接对话框里用户填的是"IP + 端口 + 账号 + stream1/stream2"，若这里还回
+    厂商模板，【测试】测通的和【保存】后播放器拉的就是两条地址。
+    """
+    v = VideoCfg(
+        url="", camera_ip="192.168.1.60", user="admin", password="pw123456",
+        stream_paths=["stream1", "stream2"], stream_index=0,
+    )
+    assert v.resolved_url(0) == "rtsp://admin:pw123456@192.168.1.60:554/stream1"
+    assert v.resolved_url(1) == "rtsp://admin:pw123456@192.168.1.60:554/stream2"
+    assert v.resolved_url(9) == "rtsp://admin:pw123456@192.168.1.60:554/stream2"
+
+
+def test_composed_url_drops_empty_password():
+    """密码没填就别写 ``admin:@ip``：那只会让设备回 401，看不出是密码缺失。"""
+    v = VideoCfg(
+        url="", camera_ip="1.2.3.4", rtsp_port=8554, user="admin", password="",
+        stream_paths=["live"],
+    )
+    assert v.resolved_url(0) == "rtsp://1.2.3.4:8554/live"
+    v.password = "p@ss:1"
+    assert v.resolved_url(0) == "rtsp://admin:p%40ss%3A1@1.2.3.4:8554/live"
+
+
 def test_appconfig_rtsp_url_delegates_to_video_cfg():
     cfg = AppConfig()
     cfg.video.camera_ip = "192.168.1.64"

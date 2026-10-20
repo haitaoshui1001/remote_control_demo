@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import re
+import urllib.parse
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any
@@ -61,6 +62,10 @@ class VideoCfg:
     url_template: str = (
         "rtsp://{ip}:{port}/user={user}&password={password}&channel={channel}&stream={stream}.sdp?"
     )
+    # 按码流序号排列的 RTSP 路径（0=主码流、1=子码流）。手填 url 时 ONVIF 探不到
+    # 推流地址（TP-Link 不实现 GetStreamUri），主/子码流就得靠这张表换路径；
+    # 留空就退化为"地址整条不动"，行为和加这个字段之前一致。
+    stream_paths: list[str] = field(default_factory=list)
     transport: str = "tcp"
     auto_connect: bool = True
     auto_reconnect: bool = True
@@ -76,14 +81,65 @@ class VideoCfg:
     pacing_frames: int = 5
     max_dwell_ms: float = 120.0
 
-    def resolved_url(self, stream_index: int | None = None) -> str:
-        """取流地址：显式 url 优先；留空则用 url_template 拼装（传输层也走这里）。"""
+    def _stream_path(self, stream_index: int) -> str:
+        """按码流序号取 RTSP 路径（越界取最后一档）；stream_paths 没配就返回空串。"""
+        paths = [str(p).strip().strip("/") for p in self.stream_paths if str(p).strip()]
+        if not paths:
+            return ""
+        return paths[min(max(int(stream_index), 0), len(paths) - 1)]
+
+    def composed_url(self, stream_index: int | None = None) -> str:
+        """按 IP / RTSP 端口 / 账号 / 码流路径拼一条 ``rtsp://账号:密码@IP:端口/路径``。
+
+        账号段只在"用户名和密码都填了"时才带：``rtsp://admin:@ip`` 这种空密码
+        只会让设备回 401，界面反倒看不出是密码没填。密码里的 ``@`` ``:``
+        必须转义，否则 URL 解析把域名切错，设备报 404 时查不到是密码的锅。
+        拼不出来（没 IP 或没路径）返回空串，交给调用方决定怎么兜底。
+        """
         idx = self.stream_index if stream_index is None else int(stream_index)
+        ip = str(self.camera_ip or "").strip()
+        path = self._stream_path(idx)
+        if not ip or not path:
+            return ""
+        auth = ""
+        if str(self.user or "").strip() and str(self.password or ""):
+            auth = "%s:%s@" % (
+                urllib.parse.quote(str(self.user).strip(), safe=""),
+                urllib.parse.quote(str(self.password), safe=""),
+            )
+        return f"rtsp://{auth}{ip}:{int(self.rtsp_port or 554)}/{path}"
+
+    def resolved_url(self, stream_index: int | None = None) -> str:
+        """取流地址：显式 url 优先；留空则用 url_template 拼装（传输层也走这里）。
+
+        主/子码流换档按四种情形依次尝试：
+        1. 地址里有 ``{path}`` 占位符 —— 直接用 stream_paths 对应路径替换；
+        2. 地址里有 ``stream=N`` —— 改数字（雄迈那种一条 URL 走天下的写法）；
+        3. 地址末段正好等于 stream_paths 的第一档 —— 按末段换路径（TP-Link
+           ``/stream1`` ``/stream2`` 这类，手填地址时 ONVIF 探不到 StreamUri）；
+        4. 都不满足 —— 整条地址原样返回，和没加 stream_paths 之前行为一致。
+
+        ``url`` 留空但 ``stream_paths`` 填了、模板里又没有 ``{path}`` 时，直接按
+        ``composed_url`` 拼装：用户在连接对话框里填的就是 IP / 端口 / 账号 / 路径，
+        自检和取流必须用同一条地址，不然"测通了却没画面"这种鬼故事就没法解释。
+        """
+        idx = self.stream_index if stream_index is None else int(stream_index)
+        path = self._stream_path(idx)
         base = self.url.strip()
         if base:
+            if "{path}" in base:
+                return base.replace("{path}", path) if path else base
             if "stream=" in base:
                 return re.sub(r"stream=\d+", f"stream={idx}", base, count=1)
+            if path:
+                head, sep, tail = base.rstrip("/").rpartition("/")
+                if sep and tail == self._stream_path(0):
+                    return f"{head}/{path}"
             return base
+        if path and "{path}" not in self.url_template:
+            composed = self.composed_url(idx)
+            if composed:
+                return composed
         return self.url_template.format(
             user=self.user,
             password=self.password,
@@ -91,6 +147,7 @@ class VideoCfg:
             port=self.rtsp_port,
             channel=self.channel,
             stream=idx,
+            path=path,
         )
 
 

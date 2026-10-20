@@ -38,6 +38,7 @@ class Events:
     TELEMETRY_SAMPLE = "robot/telemetry"
     MOTION_STATE = "robot/motion"
     CAMERA_CFG = "camera/config"
+    CAMERA_PROBE = "camera/probe"
 
 
 @dataclass

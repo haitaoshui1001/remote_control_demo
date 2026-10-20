@@ -78,13 +78,16 @@ def test_show_hide_toggles_frame_timer(page):
 
 
 def test_stream_toggle_flips_config_and_button(page):
-    assert page.service("video").stream_index == 1  # 出厂默认子码流（带宽优先）
+    """换档要同时改配置和按钮文案；出厂落在主/子哪一档由 app.yaml 决定，不作断言。"""
+    video = page.service("video")
+    start = int(video.cfg.video.stream_index)
+    other = 0 if start == 1 else 1
     page._on_stream_clicked()
-    assert page.service("video").cfg.video.stream_index == 0
-    assert page.btn_stream.text() == "切换子码流"
+    assert video.cfg.video.stream_index == other
+    assert page.btn_stream.text() == ("切换主码流" if other == 1 else "切换子码流")
     page._on_stream_clicked()
-    assert page.service("video").cfg.video.stream_index == 1
-    assert page.btn_stream.text() == "切换主码流"
+    assert video.cfg.video.stream_index == start
+    assert page.btn_stream.text() == ("切换主码流" if start == 1 else "切换子码流")
 
 
 def test_source_button_starts_and_stops_mock_stream(qapp, session):

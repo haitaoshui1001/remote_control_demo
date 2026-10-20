@@ -48,6 +48,7 @@ COALESCED_TOPICS: tuple[str, ...] = (
     Events.TELEMETRY_SAMPLE,
     Events.MOTION_STATE,
     Events.CAMERA_CFG,
+    Events.CAMERA_PROBE,
 )
 
 #: 一条都不该悄悄丢掉的主题（报文流水、告警、日志）。

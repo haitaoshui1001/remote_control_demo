@@ -14,8 +14,9 @@ import threading
 import time
 
 import pytest
+import yaml
 
-from hmi.core.config import AppConfig
+from hmi.core.config import AppConfig, VideoCfg
 from hmi.core.events import EventBus, Events
 from hmi.protocol.onvif import (
     EncoderOptions,
@@ -23,7 +24,14 @@ from hmi.protocol.onvif import (
     OnvifError,
     OnvifProfile,
 )
-from hmi.services.camera_config import CameraConfigService, CameraParams
+from hmi.services import camera_config as cc
+from hmi.services.camera_config import (
+    CameraConfigService,
+    CameraParams,
+    CameraProbe,
+    _probe_rtsp,
+    compose_rtsp_url,
+)
 
 
 class FakeClient:
@@ -36,6 +44,8 @@ class FakeClient:
         current: EncoderSettings | None = None,
         options: EncoderOptions | None = None,
         set_error: str = "",
+        info: dict | None = None,
+        info_error: str = "",
     ) -> None:
         self.auth_mode = "wsse"
         self.profiles = profiles if profiles is not None else [
@@ -56,6 +66,11 @@ class FakeClient:
         self.set_error = set_error
         self.set_calls: list[EncoderSettings] = []
         self.options_tokens: list[str] = []
+        self.info = info if info is not None else {
+            "manufacturer": "TP-LINK", "model": "TL-IPC341P-W2.8",
+            "firmware": "1.0.0", "serial": "SN-0001",
+        }
+        self.info_error = info_error
 
     def get_profiles(self) -> list[OnvifProfile]:
         return self.profiles
@@ -73,16 +88,28 @@ class FakeClient:
         self.set_calls.append(st)
         return st.encoder_token
 
+    def get_device_information(self) -> dict:
+        if self.info_error:
+            raise OnvifError(self.info_error)
+        return self.info
+
 
 class FakeVideo:
     def __init__(self, *, fail: bool = False) -> None:
         self.restart_count = 0
         self.fail = fail
+        self.stream_calls: list[tuple[int, bool]] = []
+        self.running = True
+        self.stream_return = {"ok": True, "detail": "已切换", "url": ""}
 
     def restart(self) -> None:
         self.restart_count += 1
         if self.fail:
             raise RuntimeError("取流重启炸了")
+
+    def set_stream(self, stream_index: int, *, persist: bool = True) -> dict:
+        self.stream_calls.append((int(stream_index), bool(persist)))
+        return dict(self.stream_return)
 
 
 _EXPAT_MSG = "No module named expat; use SimpleXMLTreeBuilder instead"
@@ -103,7 +130,7 @@ def _service(
 ) -> CameraConfigService:
     cfg = cfg or AppConfig()
     svc = CameraConfigService(cfg, bus=bus or EventBus(), video=video)
-    monkeypatch.setattr(svc, "_client", lambda: fake)
+    monkeypatch.setattr(svc, "_client", lambda v=None: fake)
     return svc
 
 
@@ -270,6 +297,244 @@ def test_summary_keys(monkeypatch):
     svc = _service(monkeypatch, FakeClient(), cfg=cfg)
     s = svc.summary()
     assert s == {"ip": cfg.video.camera_ip, "port": 8080, "busy": False}
+
+
+# ---------------------------------------------------------------- 地址拼装
+def test_compose_rtsp_url_escapes_credentials():
+    v = VideoCfg(
+        camera_ip="192.168.1.60", rtsp_port=554, user="ad@min",
+        password="p:ss1234", stream_paths=["stream1", "stream2"], stream_index=1,
+    )
+    assert compose_rtsp_url(v) == "rtsp://ad%40min:p%3Ass1234@192.168.1.60:554/stream2"
+
+
+def test_compose_rtsp_url_needs_ip_and_paths():
+    assert compose_rtsp_url(VideoCfg(camera_ip="", stream_paths=["s1"])) == ""
+    assert compose_rtsp_url(VideoCfg(camera_ip="1.2.3.4", stream_paths=[])) == ""
+
+
+def test_compose_rtsp_url_out_of_range_takes_last_tier():
+    v = VideoCfg(camera_ip="1.2.3.4", stream_paths=["main", "sub"])
+    assert compose_rtsp_url(v, 9) == "rtsp://1.2.3.4:554/sub"
+
+
+# ---------------------------------------------------------------- RTSP 明文探测
+class _Sock:
+    """按脚本回包的假 socket：每次 recv 吐一整段应答。"""
+
+    def __init__(self, replies) -> None:
+        self.replies = list(replies)
+        self.sent: list[bytes] = []
+        self.closed = False
+
+    def sendall(self, data: bytes) -> None:
+        self.sent.append(data)
+
+    def recv(self, _n: int) -> bytes:
+        if not self.replies:
+            return b""
+        return self.replies.pop(0)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _sdp_reply() -> bytes:
+    body = (
+        "v=0\r\nm=video 0 RTP/AVP 96\r\n"
+        "a=rtpmap:96 H265/90000\r\nx-dimension: 1920*1080@#25\r\n"
+    ).encode()
+    return (
+        b"RTSP/1.0 200 OK\r\nCSeq: 2\r\nContent-Type: application/sdp\r\n"
+        b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body
+    )
+
+
+def _patch_sock(monkeypatch, replies):
+    sock = _Sock(replies)
+    monkeypatch.setattr(cc.socket, "create_connection", lambda *a, **k: sock)
+    return sock
+
+
+def test_probe_rtsp_ok_reports_resolution(monkeypatch):
+    _patch_sock(monkeypatch, [b"RTSP/1.0 200 OK\r\nCSeq: 1\r\n\r\n", _sdp_reply()])
+    ok, detail = _probe_rtsp("rtsp://admin:pwd@192.168.1.60:554/stream1")
+    assert ok and "1920x1080" in detail and "25fps" in detail
+
+
+def test_probe_rtsp_credentials_not_in_request_line(monkeypatch):
+    sock = _patch_sock(monkeypatch, [b"RTSP/1.0 200 OK\r\nCSeq: 1\r\n\r\n", _sdp_reply()])
+    _probe_rtsp("rtsp://admin:pwd@192.168.1.60:554/stream1")
+    assert b"pwd" not in sock.sent[0], "请求行不能带密码"
+    assert b"Authorization: Basic" in sock.sent[0], "凭据要走 Basic 头"
+
+
+def test_probe_rtsp_connection_refused_points_at_ip_port(monkeypatch):
+    def boom(*a, **k):
+        raise ConnectionRefusedError("10061 拒绝")
+
+    monkeypatch.setattr(cc.socket, "create_connection", boom)
+    ok, detail = _probe_rtsp("rtsp://admin@192.168.1.99:554/stream1")
+    assert not ok and "RTSP 端口连不上" in detail and "192.168.1.99:554" in detail
+
+
+def test_probe_rtsp_401_blames_password(monkeypatch):
+    _patch_sock(monkeypatch, [b"RTSP/1.0 401 Unauthorized\r\nCSeq: 1\r\n\r\n"])
+    ok, detail = _probe_rtsp("rtsp://admin:bad@192.168.1.60:554/stream1")
+    assert not ok and "账号或密码不对" in detail
+
+
+def test_probe_rtsp_404_blames_stream_path(monkeypatch):
+    _patch_sock(monkeypatch, [
+        b"RTSP/1.0 200 OK\r\nCSeq: 1\r\n\r\n",
+        b"RTSP/1.0 404 Not Found\r\nCSeq: 2\r\n\r\n",
+    ])
+    ok, detail = _probe_rtsp("rtsp://admin:pwd@192.168.1.60:554/h264")
+    assert not ok and "推流路径不存在" in detail
+
+
+def test_probe_rtsp_silent_port(monkeypatch):
+    _patch_sock(monkeypatch, [b""])
+    ok, detail = _probe_rtsp("rtsp://192.168.1.60:80/stream1")
+    assert not ok and "没应答" in detail
+
+
+def test_probe_rtsp_rejects_malformed_url():
+    ok, detail = _probe_rtsp("http://192.168.1.60/stream1")
+    assert not ok and "地址格式不对" in detail
+
+
+# ---------------------------------------------------------------- probe
+def test_probe_judges_rtsp_and_onvif_separately(monkeypatch):
+    fake = FakeClient()
+    svc = _service(monkeypatch, fake)
+    monkeypatch.setattr(cc, "_probe_rtsp", lambda url, **k: (False, "推流路径不存在"))
+    res = svc.probe()
+    assert not res.ok and res.rtsp_detail == "推流路径不存在"
+    assert res.onvif_ok and "TP-LINK" in res.onvif_detail and "TL-IPC341P" in res.onvif_detail
+
+
+def test_probe_uses_snapshot_not_saved_config(monkeypatch):
+    seen: list[str] = []
+    svc = _service(monkeypatch, FakeClient())
+    monkeypatch.setattr(
+        cc, "_probe_rtsp",
+        lambda url, **k: seen.append(url) or (True, "DESCRIBE 正常"),
+    )
+    snap = VideoCfg(camera_ip="10.0.0.9", stream_paths=["live"])
+    res = svc.probe(snap, 0)
+    assert res.ok and seen == ["rtsp://10.0.0.9:554/live"]
+    assert res.rtsp_url == "rtsp://10.0.0.9:554/live"
+
+
+def test_probe_without_ip_skips_onvif(monkeypatch):
+    svc = _service(monkeypatch, FakeClient())
+    monkeypatch.setattr(cc, "_probe_rtsp", lambda url, **k: (True, "DESCRIBE 正常"))
+    snap = VideoCfg(camera_ip="", url="rtsp://192.168.1.60/stream1")
+    res = svc.probe(snap)
+    assert res.ok and res.onvif_ok is False and "跳过 ONVIF" in res.onvif_detail
+
+
+def test_probe_onvif_failure_does_not_kill_rtsp(monkeypatch):
+    svc = _service(monkeypatch, FakeClient(info_error="401 未授权"))
+    monkeypatch.setattr(cc, "_probe_rtsp", lambda url, **k: (True, "DESCRIBE 正常"))
+    res = svc.probe()
+    assert res.ok and not res.onvif_ok and "ONVIF 不可用" in res.onvif_detail
+
+
+def test_probe_empty_url_is_clean_error(monkeypatch):
+    cfg = AppConfig()
+    cfg.video.camera_ip = ""
+    cfg.video.url = ""
+    cfg.video.stream_paths = []
+    svc = _service(monkeypatch, FakeClient(), cfg=cfg)
+    res = svc.probe()
+    assert not res.ok and "取流地址是空的" in res.error
+
+
+def test_probe_async_publishes_probe_topic(monkeypatch):
+    bus = EventBus()
+    got: list[CameraProbe] = []
+    cfg_payloads: list[object] = []
+    done = threading.Event()
+    bus.subscribe(Events.CAMERA_PROBE, lambda topic, payload: (got.append(payload), done.set()))
+    bus.subscribe(Events.CAMERA_CFG, lambda topic, payload: cfg_payloads.append(payload))
+    svc = _service(monkeypatch, FakeClient(), bus=bus)
+    monkeypatch.setattr(cc, "_probe_rtsp", lambda url, **k: (True, "DESCRIBE 正常"))
+    assert svc.probe_async() is True
+    assert done.wait(3.0), "自检结果应发 CAMERA_PROBE，不是 CAMERA_CFG"
+    assert got[0].ok and got[0].action == "probe"
+    assert not cfg_payloads, "不得污染摄像头参数对话框"
+
+
+# ---------------------------------------------------------------- 保存连接参数
+def _writable_cfg(tmp_path) -> AppConfig:
+    cfg = AppConfig()
+    cfg.meta.path = str(tmp_path / "app.yaml")
+    return cfg
+
+
+def test_apply_connection_writes_whitelist_and_reconnects(monkeypatch, tmp_path):
+    cfg = _writable_cfg(tmp_path)
+    cfg.video.buffer_ms = 300
+    svc = _service(monkeypatch, FakeClient(), cfg=cfg)
+    video = FakeVideo()
+    svc.video = video
+    snap = VideoCfg(
+        camera_ip="192.168.1.88", rtsp_port=8554, onvif_port=2000,
+        user="admin", password="pw123", stream_paths=["stream1", "stream2"],
+        stream_index=1, transport="udp", url="",
+    )
+    res = svc.apply_connection(snap)
+    assert res["ok"] and res["reconnected"]
+    v = cfg.video
+    assert (v.camera_ip, v.rtsp_port, v.onvif_port, v.password) == (
+        "192.168.1.88", 8554, 2000, "pw123",
+    )
+    assert v.stream_paths == ["stream1", "stream2"] and v.transport == "udp"
+    assert v.buffer_ms == 300, "渲染参数不能跟着连接参数一起被冲掉"
+    assert video.stream_calls == [(1, False)], "生效要走 set_stream，且别再存一次盘"
+    assert res["url"] == "rtsp://admin:pw123@192.168.1.88:8554/stream2"
+
+    saved = yaml.safe_load((tmp_path / "app.yaml").read_text(encoding="utf-8"))
+    assert saved["video"]["camera_ip"] == "192.168.1.88"
+    assert saved["video"]["stream_paths"] == ["stream1", "stream2"]
+
+
+def test_apply_connection_rejects_empty_target(monkeypatch, tmp_path):
+    saved: list = []
+    svc = _service(monkeypatch, FakeClient(), cfg=_writable_cfg(tmp_path))
+    monkeypatch.setattr(svc.cfg, "save", lambda *a, **k: saved.append(1))
+    video = FakeVideo()
+    svc.video = video
+    res = svc.apply_connection(VideoCfg(camera_ip="", url=""))
+    assert not res["ok"] and "至少填一项" in res["detail"]
+    assert not saved and video.stream_calls == []
+
+
+def test_apply_connection_survives_save_failure(monkeypatch, tmp_path):
+    """配置文件被占用（用户在编辑器里开着）时，内存里照样生效并说清楚。"""
+    svc = _service(monkeypatch, FakeClient(), cfg=_writable_cfg(tmp_path))
+    monkeypatch.setattr(svc.cfg, "save", lambda *a, **k: (_ for _ in ()).throw(OSError("busy")))
+    svc.video = FakeVideo()
+    res = svc.apply_connection(VideoCfg(camera_ip="10.1.1.1", stream_paths=["s1"]))
+    assert res["ok"] and "写盘失败" in res["detail"]
+    assert svc.cfg.video.camera_ip == "10.1.1.1"
+
+
+def test_apply_connection_clamps_stream_index(monkeypatch, tmp_path):
+    svc = _service(monkeypatch, FakeClient(), cfg=_writable_cfg(tmp_path))
+    video = FakeVideo()
+    svc.video = video
+    res = svc.apply_connection(VideoCfg(camera_ip="10.1.1.1", stream_index=7))
+    assert svc.cfg.video.stream_index == 1
+    assert video.stream_calls == [(1, False)]
+
+
+def test_apply_connection_without_video_service(monkeypatch, tmp_path):
+    svc = _service(monkeypatch, FakeClient(), cfg=_writable_cfg(tmp_path))
+    res = svc.apply_connection(VideoCfg(camera_ip="10.1.1.1", stream_paths=["s1"]))
+    assert res["ok"] and "reconnected" not in res
 
 
 if __name__ == "__main__":

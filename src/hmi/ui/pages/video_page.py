@@ -33,7 +33,7 @@ from PyQt5.QtWidgets import (
 
 from ...core.events import Events
 from ...services.video import as_rgb_array
-from ..widgets import CameraConfigDialog, MotionPad, TelemetryBar
+from ..widgets import CameraConfigDialog, CameraConnDialog, MotionPad, TelemetryBar
 from .base import BasePage
 
 __all__ = ["VideoPage"]
@@ -63,6 +63,7 @@ class VideoPage(BasePage):
         self._dwell_ms = 0.0
         self._dwell_avg = 0.0
         self._camera_dialog: CameraConfigDialog | None = None
+        self._conn_dialog: CameraConnDialog | None = None
         #: 已按下的方向键物理键码集合：组合键（前进+转向）逐键独立跟踪，
         #: 长按去重看这个集合而不是看 isAutoRepeat 标志。
         self._held_keys: set[int] = set()
@@ -99,6 +100,10 @@ class VideoPage(BasePage):
         bar.addWidget(self.btn_stream)
         bar.addWidget(QLabel("传输"))
         bar.addWidget(self.combo_transport)
+        self.btn_conn = QPushButton("摄像头连接…")
+        self.btn_conn.setToolTip("设置摄像头 IP、端口、账号密码、主/子码流路径，并做连通性自检")
+        self.btn_conn.clicked.connect(self._on_conn_clicked)
+        bar.addWidget(self.btn_conn)
         self.btn_camera = QPushButton("摄像头参数…")
         self.btn_camera.setToolTip("远程读取/修改编码分辨率、帧率、码率（ONVIF，按 IP 直连）")
         self.btn_camera.clicked.connect(self._on_camera_clicked)
@@ -339,6 +344,18 @@ class VideoPage(BasePage):
         self._camera_dialog.raise_()
         self._camera_dialog.maybe_autoload()
 
+    def _on_conn_clicked(self) -> None:
+        camera = self.service("camera")
+        if camera is None:
+            self.say("未装配摄像头配置服务")
+            return
+        if self._conn_dialog is None:
+            self._conn_dialog = CameraConnDialog(
+                camera, self.bridge, parent=self, on_saved=self._sync_buttons
+            )
+        self._conn_dialog.show()
+        self._conn_dialog.raise_()
+
     def _sync_buttons(self) -> None:
         video = self.service("video")
         record = self.service("record")
@@ -346,9 +363,14 @@ class VideoPage(BasePage):
         self.btn_stream.setEnabled(video is not None)
         self.btn_snapshot.setEnabled(video is not None)
         self.btn_record.setEnabled(record is not None)
+        self.btn_conn.setEnabled(self.service("camera") is not None)
         self.combo_transport.setEnabled(video is not None)
         if video is None:
             return
+        # 连接对话框里也能改传输/码流，保存后这里把工具条对齐回真实配置
+        t = self.combo_transport.findData(str(self.session.cfg.video.transport or "tcp").lower())
+        if t >= 0 and t != self.combo_transport.currentIndex():
+            self.combo_transport.setCurrentIndex(t)
         self.btn_source.setText("停止视频" if video.running else "启动视频")
         idx = int(video.stream_index)
         self.btn_stream.setText("切换主码流" if idx == 1 else "切换子码流")
